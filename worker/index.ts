@@ -375,7 +375,23 @@ app.get("/api/nhl/schedule", async (context) => {
 app.notFound(async (context) => {
   const requestUrl = new URL(context.req.url);
   if (requestUrl.pathname !== "/api" && !requestUrl.pathname.startsWith("/api/")) {
-    return context.env.ASSETS.fetch(context.req.raw);
+    const asset = await context.env.ASSETS.fetch(context.req.raw);
+    const headers = new Headers(asset.headers);
+    headers.set("X-Content-Type-Options", "nosniff");
+    headers.set("Referrer-Policy", "same-origin");
+    headers.set("X-Frame-Options", "DENY");
+    headers.set("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+    if (headers.get("Content-Type")?.includes("text/html")) {
+      headers.set(
+        "Content-Security-Policy",
+        "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' https: data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
+      );
+    }
+    return new Response(asset.body, {
+      status: asset.status,
+      statusText: asset.statusText,
+      headers,
+    });
   }
   return context.json({ error: "API route was not found." }, 404);
 });
