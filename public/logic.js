@@ -25,6 +25,11 @@ export function isGoalie(player) {
   return (player.positions || []).map(String).map(x=>x.toUpperCase()).includes('G');
 }
 
+export function hasProjectionValue(player) {
+  if (String(player?.projectionSource || '').toLowerCase() === 'unset') return false;
+  return Number.isFinite(Number(player?.fppg));
+}
+
 export function isReserve(player) {
   return ['IR','IR+'].includes(String(player.selectedPosition || '').toUpperCase());
 }
@@ -155,9 +160,28 @@ export function candidateScheduleMetrics(candidate, schedule, start) {
 }
 
 export function analyzeCandidate(candidate, state, activeSlots=ACTIVE_SLOTS) {
+  const scheduleMetrics=candidateScheduleMetrics(candidate,state.schedule,state.selectedDate);
+  if(!hasProjectionValue(candidate)) {
+    return {drop:null,delta:Number.NaN,usableDelta:Number.NaN,notActionable:true,projectionMissing:true,...scheduleMetrics};
+  }
+
+  const activeBench=(state.roster||[]).filter(p=>!isReserve(p));
+  const missingRosterProjections=activeBench.filter(p=>!hasProjectionValue(p));
+  if(missingRosterProjections.length) {
+    return {
+      drop:null,
+      delta:Number.NaN,
+      usableDelta:Number.NaN,
+      notActionable:true,
+      rosterProjectionMissing:true,
+      missingRosterProjectionIds:missingRosterProjections.map(p=>p.id),
+      ...scheduleMetrics
+    };
+  }
+
   const base=projectWeek(state.roster,state.schedule,state.selectedDate,activeSlots);
-  const activeBenchCount=(state.roster||[]).filter(p=>!isReserve(p)).length;
-  const possibleDrops=(state.roster||[]).filter(p=>p.canDrop!==false && !p.core && !isReserve(p));
+  const activeBenchCount=activeBench.length;
+  const possibleDrops=activeBench.filter(p=>p.canDrop!==false && !p.core);
   const trials=[];
 
   if(activeBenchCount < ACTIVE_BENCH_CAPACITY) {
@@ -172,7 +196,7 @@ export function analyzeCandidate(candidate, state, activeSlots=ACTIVE_SLOTS) {
   }
   trials.sort((a,b)=>b.delta-a.delta || b.usableDelta-a.usableDelta);
   const best=trials[0] || {drop:null,delta:Number.NEGATIVE_INFINITY,usableDelta:0,notActionable:true};
-  return {...best,...candidateScheduleMetrics(candidate,state.schedule,state.selectedDate)};
+  return {...best,...scheduleMetrics};
 }
 
 export function parsePlayerLines(text) {
