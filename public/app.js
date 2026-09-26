@@ -6,6 +6,7 @@ import {
   candidateScheduleMetrics,
   dayAvailability,
   gamesOn,
+  hasProjectionValue,
   hasScheduleWindow,
   isGoalie,
   isReserve,
@@ -86,7 +87,10 @@ function nullableNumber(v) {
 function esc(s) { return String(s ?? '').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c])); }
 function fmtDate(dateStr) { return new Date(`${dateStr}T12:00:00`).toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'}); }
 function fmtWhen(value) { return value ? new Date(value).toLocaleString() : 'Never'; }
-function hasProjection(p) { return p?.projectionSource && p.projectionSource !== 'unset' && Number.isFinite(Number(p.fppg)); }
+function hasProjection(p) { return hasProjectionValue(p); }
+function rosterProjectionComplete() {
+  return state.roster.filter(p=>!isReserve(p)).every(hasProjection);
+}
 function projectionLabel(p) {
   if (!hasProjection(p)) return 'Projection needed';
   return p.projectionSource === 'manual' ? 'Manual' : p.projectionSource;
@@ -791,9 +795,10 @@ function renderKPIs() {
   $('#kpiRoster').textContent = `${counts.activeBench} / ${ACTIVE_BENCH_CAPACITY}`;
   $('#kpiReserve').textContent = `${counts.reserve} reserve`;
   const scheduleReady=hasScheduleWindow(state.schedule,state.selectedDate);
+  const projectionsReady=rosterProjectionComplete();
   $('#kpiUsable').textContent = scheduleReady ? w.usableGames.toFixed(1) : '—';
-  $('#kpiPoints').textContent = scheduleReady ? w.points.toFixed(1) : '—';
-  $('#kpiLeakage').textContent = scheduleReady ? w.leakage.toFixed(1) : '—';
+  $('#kpiPoints').textContent = scheduleReady && projectionsReady ? w.points.toFixed(1) : '—';
+  $('#kpiLeakage').textContent = scheduleReady && projectionsReady ? w.leakage.toFixed(1) : '—';
 }
 
 function renderScheduleStatus() {
@@ -822,8 +827,9 @@ function renderToday() {
   const bySlot = new Map(r.starters.map(x=>[x.slotIndex,x.player]));
   league.activeSlots.forEach((slot,idx)=>{
     const p = bySlot.get(idx);
+    const projected=p ? hasProjection(p) : false;
     body.insertAdjacentHTML('beforeend', p
-      ? `<tr><td><span class="badge">${slot}</span></td><td><strong>${esc(p.name)}</strong></td><td>${esc(p.team)}</td><td>${esc((p.positions||[]).join('/'))}</td><td>${(Number(p.fppg)||0).toFixed(2)}</td><td>${(p.fppg*p.availability).toFixed(2)}</td></tr>`
+      ? `<tr><td><span class="badge">${slot}</span></td><td><strong>${esc(p.name)}</strong></td><td>${esc(p.team)}</td><td>${esc((p.positions||[]).join('/'))}</td><td>${projected?Number(p.fppg).toFixed(2):'—'}</td><td>${projected?(p.fppg*p.availability).toFixed(2):'—'}</td></tr>`
       : `<tr><td><span class="badge">${slot}</span></td><td class="muted">Open</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>`
     );
   });
@@ -831,19 +837,27 @@ function renderToday() {
   const attention = $('#todayBench');
   attention.className = 'stack-list';
   attention.innerHTML = '';
+  const missingProjection=r.scheduled.filter(p=>!hasProjection(p));
+  for (const p of missingProjection) {
+    attention.insertAdjacentHTML('beforeend',`<div class="stack-item"><div><strong>${esc(p.name)}</strong><div class="mini-note">${esc(p.team)} plays · projection needed</div></div><div><span class="badge">?</span></div></div>`);
+  }
   for (const p of r.blocked.sort((a,b)=>(b.fppg*b.availability)-(a.fppg*a.availability))) {
-    attention.insertAdjacentHTML('beforeend',`<div class="stack-item"><div><strong>${esc(p.name)}</strong><div class="mini-note">${esc(p.team)} · blocked by lineup congestion</div></div><div><strong>${(p.fppg*p.availability).toFixed(2)}</strong><div class="mini-note">expected pts</div></div></div>`);
+    const projected=hasProjection(p);
+    attention.insertAdjacentHTML('beforeend',`<div class="stack-item"><div><strong>${esc(p.name)}</strong><div class="mini-note">${esc(p.team)} · blocked by lineup congestion</div></div><div><strong>${projected?(p.fppg*p.availability).toFixed(2):'—'}</strong><div class="mini-note">${projected?'expected pts':'projection needed'}</div></div></div>`);
   }
   for (const p of r.goalieUnconfirmed) {
     attention.insertAdjacentHTML('beforeend',`<div class="stack-item"><div><strong>${esc(p.name)}</strong><div class="mini-note">${esc(p.team)} plays · goalie start unconfirmed</div></div><div><span class="badge">G</span></div></div>`);
   }
-  if (!r.blocked.length && !r.goalieUnconfirmed.length) {
+  if (!missingProjection.length && !r.blocked.length && !r.goalieUnconfirmed.length) {
     attention.className = 'stack-list empty-state';
     attention.textContent = 'No lineup congestion or unconfirmed goalie starts flagged.';
   }
 
   const banner = $('#todayActionBanner');
-  if (r.blocked.length) {
+  if (missingProjection.length) {
+    banner.className='action-banner warn';
+    banner.innerHTML=`<strong>Lineup ranking is provisional.</strong> ${missingProjection.length} scheduled player${missingProjection.length===1?' is':'s are'} missing a projection, so projected points and congestion value are incomplete.`;
+  } else if (r.blocked.length) {
     banner.className='action-banner warn';
     banner.innerHTML=`<strong>${r.blocked.length} usable player${r.blocked.length===1?' is':'s are'} blocked.</strong> About ${r.leakage.toFixed(1)} expected points are sitting outside active slots.`;
   } else if (r.goalieUnconfirmed.length) {
@@ -869,10 +883,11 @@ function renderWeek() {
 
 function candidateAnalysisRows() {
   const scheduleReady=hasScheduleWindow(state.schedule,state.selectedDate);
+  const rosterReady=rosterProjectionComplete();
   return state.waivers.map(c=>{
-    const analysis = hasProjection(c) && scheduleReady
+    const analysis = hasProjection(c) && scheduleReady && rosterReady
       ? analyzeCandidate(c,state,league.activeSlots)
-      : {...candidateScheduleMetrics(c,state.schedule,state.selectedDate),delta:Number.NaN,usableDelta:Number.NaN,drop:null,projectionMissing:!hasProjection(c),scheduleMissing:!scheduleReady};
+      : {...candidateScheduleMetrics(c,state.schedule,state.selectedDate),delta:Number.NaN,usableDelta:Number.NaN,drop:null,projectionMissing:!hasProjection(c),scheduleMissing:!scheduleReady,rosterProjectionMissing:!rosterReady};
     return {candidate:c,analysis};
   }).sort((a,b)=>{
     const aReady=hasProjection(a.candidate), bReady=hasProjection(b.candidate);
