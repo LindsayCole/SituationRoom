@@ -1,5 +1,9 @@
-.env
-.data/*
-!.data/.gitkeep
 node_modules/
+dist/
+.wrangler/
+.dev.vars
+.env
+.env.*
+!.env.example
+.data/
 .DS_Store
