@@ -529,8 +529,8 @@ function renderYahooStatus() {
   $('#leagueKeyValue').textContent = state.yahoo.leagueKey || '—';
   $('#rosterSourceValue').textContent = state.yahoo.rosterSource || 'local';
   $('#rosterDateValue').textContent = state.yahoo.rosterDate || '—';
-  $('#yahooRedirectUri').textContent = yahooStatus.redirectUri || 'Set YAHOO_REDIRECT_URI in .env';
-  $('#yahooMissingConfig').textContent = yahooStatus.missingConfig?.length ? yahooStatus.missingConfig.join(', ') : 'None';
+  $('#yahooRedirectUri').textContent = yahooStatus.redirectUri || 'Will be assigned when Yahoo OAuth is added to the Site';
+  $('#yahooMissingConfig').textContent = yahooStatus.configured ? 'Configured' : 'Yahoo app setup is the next phase';
   $('#yahooPoolSummary').textContent = state.waivers.length
     ? `${state.waivers.length} available players in local pool`
     : 'No Yahoo player pool loaded yet';
@@ -931,6 +931,7 @@ $('#searchYahooPlayersBtn').addEventListener('click',searchYahooPlayers);
 $('#yahooPlayerSearch').addEventListener('keydown',e=>{if(e.key==='Enter')searchYahooPlayers();});
 $('#waiverFilterInput').addEventListener('input',renderWaivers);
 $('#waiverPositionFilter').addEventListener('change',renderWaivers);
+$('#refreshHistoryBtn').addEventListener('click',loadHistory);
 $('#disconnectYahooBtn').addEventListener('click',async()=>{if(!confirm('Disconnect Yahoo from this local Situation Room server?'))return;await fetchJson('/api/yahoo/disconnect',{method:'POST'});state.yahoo={...clone(seedState.yahoo)};saveState();await loadYahooStatus();renderAll();});
 $('#importWaiversBtn').addEventListener('click',()=>{const players=parsePlayerLines($('#waiverImport').value);if(!players.length){alert('No valid waiver lines found.');return;}state.waivers=players;saveState({source:'manual',action:'waiver-import',metadata:{count:players.length}});renderAll();});
 $('#clearWaiversBtn').addEventListener('click',()=>{if(confirm('Clear the stored waiver candidate pool?')){const count=state.waivers.length;state.waivers=[];saveState({source:'manual',action:'waiver-clear',metadata:{count}});renderAll();}});
