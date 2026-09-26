@@ -133,17 +133,26 @@ function statusBadge(p) {
 function normalizeLoadedPlayer(p) {
   const positions = parsePositions((p.positions || []).join ? p.positions.join('/') : p.positions);
   const goalie = positions.includes('G');
+  const core=Boolean(p.core);
+  const yahooUndroppable=Boolean(p.yahooUndroppable);
+  const manualCanDrop=p.manualCanDrop !== undefined
+    ? Boolean(p.manualCanDrop)
+    : core
+      ? true
+      : p.canDrop !== false;
   return {
     id: p.id || makeUuid(),
     name: String(p.name || 'Unknown player'),
     team: String(p.team || '').toUpperCase(),
     positions,
     fppg: Number(p.fppg) || 0,
-    core: Boolean(p.core),
-    canDrop: p.canDrop !== false,
-    selectedPosition: String(p.selectedPosition || 'BN'),
-    status: String(p.status || ''),
-    source: p.source || 'local',
+    core,
+    manualCanDrop,
+    yahooUndroppable,
+    canDrop: !core && manualCanDrop && !yahooUndroppable,
+    selectedPosition: String(p.selectedPosition || 'BN').toUpperCase(),
+    status: String(p.status || '').toUpperCase(),
+    source: p.source || 'stored',
     yahooPlayerKey: p.yahooPlayerKey || null,
     yahooSeasonPoints: nullableNumber(p.yahooSeasonPoints),
     ownershipType: p.ownershipType || null,
@@ -153,7 +162,9 @@ function normalizeLoadedPlayer(p) {
     projectionSource: p.projectionSource || (p.source === 'manual' ? 'manual' : 'unset'),
     projectionUpdatedAt: p.projectionUpdatedAt || null,
     startProbability: goalie ? Math.max(0,Math.min(1,Number(p.startProbability)||0)) : 1,
-    goalieStartProbabilities: p.goalieStartProbabilities || {}
+    goalieStartProbabilities: p.goalieStartProbabilities && typeof p.goalieStartProbabilities === 'object'
+      ? p.goalieStartProbabilities
+      : {}
   };
 }
 
@@ -449,6 +460,7 @@ function parseYahooPlayers(doc, source='yahoo') {
     const percentValue = percentEl ? nullableNumber(directText(percentEl,'value')) : null;
     const imageUrl = directText(el,'image_url') || nestedText(el,'headshot','url') || null;
     const waiverDate = ownershipEl ? (directText(ownershipEl,'waiver_date') || null) : null;
+    const yahooUndroppable = directText(el,'is_undroppable') === '1';
     players.push({
       id: makeUuid(),
       yahooPlayerKey: playerKey,
@@ -459,7 +471,9 @@ function parseYahooPlayers(doc, source='yahoo') {
       status,
       fppg: 0,
       core:false,
-      canDrop: directText(el,'is_undroppable') !== '1',
+      manualCanDrop:true,
+      yahooUndroppable,
+      canDrop: !yahooUndroppable,
       source,
       yahooSeasonPoints: Number.isFinite(seasonPoints) ? seasonPoints : null,
       ownershipType: ownershipEl ? directText(ownershipEl,'ownership_type') : null,
@@ -487,7 +501,12 @@ function mergeYahooRoster(yahooPlayers) {
       projectionSource: old?.projectionSource || 'unset',
       projectionUpdatedAt: old?.projectionUpdatedAt || null,
       core: old?.core || false,
-      canDrop: p.canDrop && (old ? old.canDrop !== false : true),
+      manualCanDrop: old?.manualCanDrop !== undefined
+        ? old.manualCanDrop
+        : old?.core
+          ? true
+          : old?.canDrop !== false,
+      yahooUndroppable: Boolean(p.yahooUndroppable),
       startProbability: isGoalie(p) ? (Number(old?.startProbability)||0) : 1,
       goalieStartProbabilities: old?.goalieStartProbabilities || {}
     });
@@ -506,11 +525,30 @@ function mergeYahooWaivers(yahooPlayers) {
       projectionSource: old?.projectionSource || 'unset',
       projectionUpdatedAt: old?.projectionUpdatedAt || null,
       core:false,
-      canDrop:true,
+      manualCanDrop:true,
+      yahooUndroppable:Boolean(p.yahooUndroppable),
       startProbability: isGoalie(p) ? (Number(old?.startProbability)||0) : 1,
       goalieStartProbabilities: old?.goalieStartProbabilities || {}
     });
   });
+}
+
+function replaceYahooWaiverPool(yahooPlayers) {
+  const merged=mergeYahooWaivers(yahooPlayers);
+  const matchedNames=new Set(merged.map(p=>p.name.toLowerCase()));
+  const manualUnmatched=state.waivers.filter(p=>!p.yahooPlayerKey && !matchedNames.has(p.name.toLowerCase()));
+  return [...manualUnmatched,...merged];
+}
+
+function mergeYahooSearchIntoWaiverPool(yahooPlayers) {
+  const incoming=mergeYahooWaivers(yahooPlayers);
+  const incomingKeys=new Set(incoming.map(p=>p.yahooPlayerKey).filter(Boolean));
+  const incomingNames=new Set(incoming.map(p=>p.name.toLowerCase()));
+  const retained=state.waivers.filter(p=>{
+    if (p.yahooPlayerKey) return !incomingKeys.has(p.yahooPlayerKey);
+    return !incomingNames.has(p.name.toLowerCase());
+  });
+  return [...retained,...incoming];
 }
 
 function scheduleDaysFromResponse(data) {
