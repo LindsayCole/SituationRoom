@@ -1,8 +1,8 @@
-# Dead Puck Society — Situation Room v2 alpha
+# Dead Puck Society — Situation Room v2.1 alpha
 
 A season-long command center for the 2026–27 Yahoo fantasy hockey league **Blades of Glory Tokyo Drift**.
 
-v2 keeps the deterministic lineup/waiver engine from v1, fixes the major season-use bugs, and adds a secure server-side Yahoo OAuth/read-sync layer. It does **not** use the OpenAI API.
+v2.1 keeps the deterministic lineup/waiver engine, hardens the Yahoo OAuth/read-sync layer, and separates Yahoo's authoritative player/roster data from Situation Room's editable projection model. It does **not** use the OpenAI API.
 
 ## What v2 does now
 
@@ -15,9 +15,13 @@ v2 keeps the deterministic lineup/waiver engine from v1, fixes the major season-
 - Waiver candidate ranking by net usable 7-day value.
 - Manual FPPG editing.
 - Yahoo OAuth 2.0 backend scaffold.
-- Yahoo roster sync.
-- Yahoo available-player sync, including Yahoo season fantasy points when present.
-- Encrypted Yahoo token storage on the server.
+- Yahoo roster sync using today's authoritative roster date.
+- Yahoo available-player sync, including season fantasy points and rostered percentage when Yahoo supplies them.
+- On-demand Yahoo available-player search by name and position.
+- Clear projection provenance: Yahoo identity/stats are separate from editable FPPG.
+- Players with no projection are visible but are not treated as actionable add/drop recommendations.
+- Encrypted Yahoo token storage on the server, anchored to the app directory.
+- GitHub Actions CI for syntax checks and unit tests.
 - ChatGPT Situation Brief export without paid OpenAI API usage.
 - JSON backup/restore.
 - Unit-tested optimizer logic.
@@ -36,7 +40,7 @@ No npm dependencies are required.
 ## First run without Yahoo
 
 ```bash
-cd dead-puck-situation-room-v2
+cd SituationRoom
 npm test
 npm start
 ```
@@ -79,7 +83,22 @@ Generate an encryption key with:
 node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 ```
 
-6. Start the server and use **Yahoo Sync → Connect Yahoo**.
+6. Start the server and open **Yahoo Sync**. The page shows any missing environment variables and the configured callback URI.
+7. Select **Connect Yahoo** to complete Yahoo's Authorization Code consent flow.
+8. After authorization, select **Sync now**. Situation Room discovers your NHL fantasy team, syncs today's roster, then loads the top 100 available players by Yahoo season fantasy points.
+
+Do not commit your real `.env` file or paste the Yahoo client secret into chat.
+
+## Yahoo player workflow
+
+Yahoo and Situation Room deliberately have different jobs:
+
+1. **Yahoo is authoritative for identity and league state:** player key, name, NHL team, eligible positions, Yahoo roster slot, injury/status, cant-cut state, ownership type, season fantasy points and rostered percentage when available.
+2. **Situation Room owns projections:** FPPG, core/drop protection and goalie start probability remain editable analysis inputs.
+3. A normal sync reads **today's Yahoo roster**, regardless of the date currently selected in the 7-day planner.
+4. The initial player pool contains the top 100 available players sorted by Yahoo season fantasy points.
+5. Use the Yahoo player search in **Waiver Command** to pull additional available players by name and optional position without repeatedly enumerating the whole player universe.
+6. A Yahoo-synced player with no projection is displayed as **Projection needed** and cannot be staged as an add/drop until an FPPG value is supplied.
 
 ## Yahoo data flow
 
@@ -173,9 +192,9 @@ This is intentionally conservative and fixes a large projection error in v1.
 
 ## FPPG and Yahoo season points
 
-Yahoo sync can import Yahoo season fantasy points. It does **not** yet automatically convert those totals into a reliable forward-looking FPPG projection.
+Yahoo sync can import Yahoo season fantasy points and rostered percentage. Those values are useful context, but they are **not** automatically treated as a forward-looking FPPG forecast.
 
-FPPG remains editable so a later projection model can be introduced without changing the optimizer.
+FPPG remains a separate editable Situation Room projection. When a Yahoo player has no projection, the UI says so explicitly and add/drop staging remains disabled for that player.
 
 ## ChatGPT without OpenAI API billing
 
@@ -200,6 +219,6 @@ npm run check
 npm test
 ```
 
-The current suite covers multi-position assignment, negative-value benching, IR exclusion, goalie start uncertainty, candidate/open-slot logic, imports, and seven-day projections.
+The current suite covers multi-position assignment, negative-value benching, IR/unavailable-player exclusion, goalie start uncertainty, candidate/open-slot logic, imports, and seven-day projections. GitHub Actions runs both syntax checks and the unit suite on pushes and pull requests.
 
 See `CODE_AUDIT.md` for the v1 findings and the remaining v2 work.
