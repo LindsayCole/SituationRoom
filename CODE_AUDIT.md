@@ -169,3 +169,37 @@ Syntax and unit tests had been run manually but GitHub did not enforce them on c
 - Forward-looking player FPPG is still a separate projection problem; Yahoo season points are context, not automatically treated as a forecast.
 - Goalie starter probability still needs a provider.
 - No Yahoo write operations are implemented.
+
+
+# v2.2 architecture review — ChatGPT Sites persistence
+
+Review date: 2026-09-26
+
+## Architecture change
+
+The standalone Node/local-server design is retired as the deployment target. ChatGPT Sites is now the target runtime.
+
+Durable application state uses the Sites-managed D1 binding `DB`.
+
+## Persistence guarantees implemented
+
+- D1 is authoritative; localStorage is not the database.
+- One current state snapshot is stored per authenticated ChatGPT Site user.
+- Every write increments an optimistic-concurrency revision.
+- Every revision writes a separate append-only change event.
+- Client change IDs make retry handling safer.
+- A stale browser revision receives HTTP 409 instead of overwriting newer data.
+- Failed browser saves keep an emergency recovery copy locally.
+- Old browser state can be migrated into D1 on first use.
+- Sync-run storage is reserved for Yahoo/provider refresh auditing.
+- API state responses use `Cache-Control: no-store`.
+
+## Manual actions now persisted
+
+Roster edits, add/remove, imports, waiver changes, projection edits, locally staged moves, weekly move-count edits, planner date, NHL schedule refreshes, backup import and resets all write durable revisions.
+
+## Yahoo readiness
+
+Yahoo application authorization is intentionally the next phase. The persistence layer is provider-neutral and already records Yahoo as a source when future Yahoo refreshes are applied.
+
+Yahoo secrets/tokens must not be stored in browser state or committed to Git. They will be handled by the Site worker and owner-managed Site secrets.

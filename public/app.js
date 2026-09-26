@@ -19,6 +19,7 @@ import {
 
 const STORAGE_KEY = 'deadPuckSituationRoom_v2';
 const LEGACY_STORAGE_KEY = 'deadPuckSituationRoom_v1';
+const PENDING_RECOVERY_KEY = 'deadPuckSituationRoom_pendingRecovery';
 
 const league = {
   id: 46311,
@@ -156,33 +157,117 @@ function migrateLegacy(legacy) {
   return migrated;
 }
 
-function loadState() {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      return {
-        ...clone(seedState),
-        ...parsed,
-        roster: Array.isArray(parsed.roster) ? parsed.roster.map(normalizeLoadedPlayer) : clone(seedState.roster),
-        waivers: Array.isArray(parsed.waivers) ? parsed.waivers.map(normalizeLoadedPlayer) : [],
-        yahoo: {...clone(seedState.yahoo), ...(parsed.yahoo || {})}
-      };
-    }
-    const legacyRaw = localStorage.getItem(LEGACY_STORAGE_KEY);
-    if (legacyRaw) return migrateLegacy(JSON.parse(legacyRaw));
-  } catch (err) {
-    console.warn('Local state could not be loaded.', err);
-  }
-  return clone(seedState);
+function normalizeState(parsed) {
+  return {
+    ...clone(seedState),
+    ...(parsed || {}),
+    roster: Array.isArray(parsed?.roster) ? parsed.roster.map(normalizeLoadedPlayer) : clone(seedState.roster),
+    waivers: Array.isArray(parsed?.waivers) ? parsed.waivers.map(normalizeLoadedPlayer) : [],
+    yahoo: {...clone(seedState.yahoo), ...(parsed?.yahoo || {})}
+  };
 }
 
-let state = loadState();
+function loadBrowserStateForMigration() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) return { state:normalizeState(JSON.parse(raw)), source:'v2-browser' };
+    const legacyRaw = localStorage.getItem(LEGACY_STORAGE_KEY);
+    if (legacyRaw) return { state:migrateLegacy(JSON.parse(legacyRaw)), source:'v1-browser' };
+  } catch (err) {
+    console.warn('Legacy browser state could not be read.', err);
+  }
+  return null;
+}
+
+let state = clone(seedState);
+let stateRevision = 0;
+let stateUpdatedAt = null;
+let saveChain = Promise.resolve();
+let historyRows = [];
 let yahooStatus = { configured:false, connected:false, writeEnabled:false, readOnlyDefault:true };
 
-function saveState() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-  $('#saveStatus').textContent = 'Saved locally · ' + new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+async function loadPersistedState() {
+  $('#saveStatus').textContent = 'Loading Site storage…';
+  const stored = await fetchJson('/api/state');
+  if (stored.state) {
+    state = normalizeState(stored.state);
+    stateRevision = Number(stored.revision) || 0;
+    stateUpdatedAt = stored.updatedAt || null;
+    $('#saveStatus').textContent = `Saved to Site · rev ${stateRevision}`;
+    return;
+  }
+
+  const browser = loadBrowserStateForMigration();
+  state = browser?.state || clone(seedState);
+  await saveState({
+    source:'system',
+    action:browser ? 'migrate-browser-state' : 'initialize-state',
+    metadata:{browserSource:browser?.source || null}
+  });
+  if (browser) {
+    localStorage.removeItem(STORAGE_KEY);
+    localStorage.removeItem(LEGACY_STORAGE_KEY);
+  }
+}
+
+function saveState(change={}) {
+  const snapshot = clone(state);
+  const clientChangeId = makeUuid();
+  const normalizedChange = {
+    source:change.source || 'manual',
+    action:change.action || 'state-update',
+    entityType:change.entityType || null,
+    entityId:change.entityId || null,
+    before:change.before,
+    after:change.after,
+    metadata:change.metadata,
+    clientChangeId
+  };
+
+  $('#saveStatus').textContent = 'Saving to Site…';
+  saveChain = saveChain.catch(()=>{}).then(async()=>{
+    try {
+      const result = await fetchJson('/api/state',{
+        method:'PUT',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({
+          state:snapshot,
+          baseRevision:stateRevision,
+          change:normalizedChange
+        })
+      });
+      stateRevision = Number(result.revision) || stateRevision;
+      stateUpdatedAt = result.updatedAt || new Date().toISOString();
+      localStorage.removeItem(PENDING_RECOVERY_KEY);
+      $('#saveStatus').textContent = `Saved to Site · rev ${stateRevision}`;
+      historyRows.unshift({
+        id:result.changeId || clientChangeId,
+        revision:stateRevision,
+        source:normalizedChange.source,
+        action:normalizedChange.action,
+        entityType:normalizedChange.entityType,
+        entityId:normalizedChange.entityId,
+        metadata:normalizedChange.metadata || null,
+        createdAt:stateUpdatedAt
+      });
+      historyRows = historyRows.slice(0,100);
+      renderPersistenceStatus();
+      renderHistory();
+      return result;
+    } catch (err) {
+      localStorage.setItem(PENDING_RECOVERY_KEY,JSON.stringify({
+        state:snapshot,
+        change:normalizedChange,
+        failedAt:new Date().toISOString()
+      }));
+      $('#saveStatus').textContent = err.status===409
+        ? 'Save conflict · recovery copy kept in browser'
+        : 'Save failed · recovery copy kept in browser';
+      renderPersistenceStatus(err.message);
+      throw err;
+    }
+  });
+  return saveChain;
 }
 
 async function fetchJson(url, options) {
@@ -190,7 +275,12 @@ async function fetchJson(url, options) {
   const text = await res.text();
   let data;
   try { data = JSON.parse(text); } catch { data = { error:text || `HTTP ${res.status}` }; }
-  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  if (!res.ok) {
+    const err = new Error(data.error || `HTTP ${res.status}`);
+    err.status = res.status;
+    err.data = data;
+    throw err;
+  }
   return data;
 }
 
@@ -335,7 +425,7 @@ async function refreshSchedule() {
     }
     state.schedule = schedule;
     state.scheduleFetchedAt = new Date().toISOString();
-    saveState();
+    saveState({source:'nhl',action:'schedule-refresh',metadata:{selectedDate:state.selectedDate,days:Object.keys(state.schedule).length}});
     renderAll();
   } catch (err) {
     $('#scheduleStatus').textContent = 'NHL schedule: refresh failed';
@@ -343,6 +433,51 @@ async function refreshSchedule() {
   } finally {
     btn.disabled = false;
     btn.textContent = 'Refresh NHL schedule';
+  }
+}
+
+async function loadHistory() {
+  try {
+    const data = await fetchJson('/api/changes?limit=100');
+    historyRows = Array.isArray(data.changes) ? data.changes : [];
+  } catch (err) {
+    console.warn('Change history could not be loaded.',err);
+  }
+  renderHistory();
+}
+
+function renderPersistenceStatus(errorText='') {
+  const pill=$('#siteStorageStatus');
+  const status=$('#storageStatusText');
+  const rev=$('#storageRevision');
+  const updated=$('#storageUpdatedAt');
+  if (!pill || !status || !rev || !updated) return;
+
+  if (errorText) {
+    pill.textContent='Site storage: attention';
+    pill.className='status-pill status-warn';
+    status.textContent=errorText;
+  } else {
+    pill.textContent=`Site storage: saved · r${stateRevision}`;
+    pill.className='status-pill good';
+    status.textContent='D1 is the authoritative store. Browser storage is used only as emergency recovery for a failed save.';
+  }
+  rev.textContent=String(stateRevision);
+  updated.textContent=fmtWhen(stateUpdatedAt);
+}
+
+function renderHistory() {
+  const body=$('#historyTable');
+  if (!body) return;
+  body.innerHTML='';
+  if (!historyRows.length) {
+    body.innerHTML='<tr><td colspan="5" class="muted">No stored changes yet.</td></tr>';
+    return;
+  }
+  for (const row of historyRows) {
+    const detail=[row.entityType,row.entityId].filter(Boolean).join(' · ')
+      || (row.metadata ? JSON.stringify(row.metadata).slice(0,120) : '—');
+    body.insertAdjacentHTML('beforeend',`<tr><td>r${Number(row.revision)||0}</td><td>${esc(fmtWhen(row.createdAt))}</td><td>${esc(row.source||'manual')}</td><td><strong>${esc(row.action||'state-update')}</strong></td><td class="mini-note">${esc(detail)}</td></tr>`);
   }
 }
 
@@ -371,7 +506,7 @@ function renderYahooStatus() {
     connect.hidden = false; sync.hidden = true; disconnect.hidden = true; headerSync.hidden = true;
     connect.disabled = true;
     const missing = yahooStatus.missingConfig?.length ? ` Missing: ${yahooStatus.missingConfig.join(', ')}.` : '';
-    text.textContent = 'Server-side Yahoo credentials are not configured yet.' + missing;
+    text.textContent = yahooStatus.message || ('Yahoo credentials are not configured yet.' + missing);
   } else if (!yahooStatus.connected) {
     header.textContent = 'Yahoo: disconnected';
     panel.textContent = 'Disconnected';
@@ -394,8 +529,8 @@ function renderYahooStatus() {
   $('#leagueKeyValue').textContent = state.yahoo.leagueKey || '—';
   $('#rosterSourceValue').textContent = state.yahoo.rosterSource || 'local';
   $('#rosterDateValue').textContent = state.yahoo.rosterDate || '—';
-  $('#yahooRedirectUri').textContent = yahooStatus.redirectUri || 'Set YAHOO_REDIRECT_URI in .env';
-  $('#yahooMissingConfig').textContent = yahooStatus.missingConfig?.length ? yahooStatus.missingConfig.join(', ') : 'None';
+  $('#yahooRedirectUri').textContent = yahooStatus.redirectUri || 'Will be assigned when Yahoo OAuth is added to the Site';
+  $('#yahooMissingConfig').textContent = yahooStatus.configured ? 'Configured' : 'Yahoo app setup is the next phase';
   $('#yahooPoolSummary').textContent = state.waivers.length
     ? `${state.waivers.length} available players in local pool`
     : 'No Yahoo player pool loaded yet';
@@ -438,7 +573,7 @@ async function syncYahoo() {
     state.yahoo.rosterDate = rosterDate;
     state.yahoo.availableCount = state.waivers.length;
     state.yahoo.rosterSource = 'Yahoo Fantasy';
-    saveState();
+    saveState({source:'yahoo',action:'yahoo-sync',metadata:{rosterCount:state.roster.length,availableCount:state.waivers.length,rosterDate}});
     renderAll();
     log.className = 'action-banner good';
     const rosterPoints = state.roster.filter(p=>p.yahooSeasonPoints !== null).length;
@@ -485,7 +620,7 @@ async function searchYahooPlayers() {
     for (const p of incoming) byKey.set(p.yahooPlayerKey,p);
     state.waivers = [...manual, ...byKey.values()];
     state.yahoo.availableCount = state.waivers.length;
-    saveState();
+    saveState({source:'yahoo',action:'yahoo-player-search',metadata:{query,position,matched:incoming.length}});
     renderAll();
     $('#yahooSyncLog').className = 'action-banner good';
     $('#yahooSyncLog').textContent = incoming.length
@@ -647,7 +782,7 @@ function renderWaivers() {
     p.fppg=Number(e.target.value)||0;
     p.projectionSource='manual';
     p.projectionUpdatedAt=new Date().toISOString();
-    saveState();renderAll();
+    saveState({source:'manual',action:'waiver-projection-edit',entityType:'player',entityId:p.yahooPlayerKey||p.id,after:{fppg:p.fppg,projectionSource:p.projectionSource}});renderAll();
   }));
   body.querySelectorAll('.stage-waiver').forEach(btn=>btn.addEventListener('click',()=>stageCandidate(btn.dataset.id)));
 }
@@ -678,7 +813,7 @@ function stageCandidate(id) {
   if (a.drop) state.roster=state.roster.filter(p=>p.id!==a.drop.id);
   state.roster.push({...c,id:makeUuid(),selectedPosition:'BN',source:'staged-local'});
   state.waivers=state.waivers.filter(x=>x.id!==id);
-  saveState();renderAll();
+  saveState({source:'manual',action:'stage-candidate',entityType:'player',entityId:c.yahooPlayerKey||c.id,metadata:{candidate:c.name,drop:a.drop?.name||null,projectedDelta:a.delta}});renderAll();
 }
 
 function renderRoster() {
@@ -708,7 +843,7 @@ function renderRoster() {
     const id=e.target.closest('tr').dataset.id;
     const p=state.roster.find(x=>x.id===id);
     if (p && confirm(`Remove ${p.name} from the local model? This does not affect Yahoo.`)) {
-      state.roster=state.roster.filter(x=>x.id!==id);saveState();renderAll();
+      state.roster=state.roster.filter(x=>x.id!==id);saveState({source:'manual',action:'roster-remove',entityType:'player',entityId:p.yahooPlayerKey||p.id,before:p});renderAll();
     }
   }));
 }
@@ -717,6 +852,7 @@ function handleRosterEdit(e) {
   const tr=e.target.closest('tr'), id=tr.dataset.id;
   const p=state.roster.find(x=>x.id===id);
   if (!p) return;
+  const before=clone(p);
   p.name=tr.querySelector('.r-name').value.trim();
   p.team=tr.querySelector('.r-team').value.trim().toUpperCase();
   p.positions=parsePositions(tr.querySelector('.r-pos').value);
@@ -730,7 +866,7 @@ function handleRosterEdit(e) {
   p.core=tr.querySelector('.r-core').checked;
   p.canDrop=p.core?false:tr.querySelector('.r-drop').checked;
   p.startProbability=isGoalie(p)?Math.max(0,Math.min(1,(Number(tr.querySelector('.r-start')?.value)||0)/100)):1;
-  saveState();renderAll();
+  saveState({source:'manual',action:'roster-edit',entityType:'player',entityId:p.yahooPlayerKey||p.id,before,after:clone(p)});renderAll();
 }
 
 function renderLeague() {
@@ -771,7 +907,7 @@ function importBackup(file) {
       const payload=JSON.parse(reader.result);
       if (!payload.state || !Array.isArray(payload.state.roster)) throw new Error('Not a Dead Puck backup.');
       state={...clone(seedState),...payload.state,roster:payload.state.roster.map(normalizeLoadedPlayer),waivers:(payload.state.waivers||[]).map(normalizeLoadedPlayer),yahoo:{...clone(seedState.yahoo),...(payload.state.yahoo||{})}};
-      saveState();renderAll();
+      saveState({source:'manual',action:'backup-import',metadata:{rosterCount:state.roster.length,waiverCount:state.waivers.length}});renderAll();
     } catch (err) { alert(`Import failed: ${err.message}`); }
   };
   reader.readAsText(file);
@@ -779,13 +915,13 @@ function importBackup(file) {
 
 function renderAll() {
   $('#todayDate').value=state.selectedDate;
-  renderScheduleStatus();renderKPIs();renderToday();renderWeek();renderWaivers();renderRoster();renderLeague();renderYahooStatus();
+  renderScheduleStatus();renderKPIs();renderToday();renderWeek();renderWaivers();renderRoster();renderLeague();renderYahooStatus();renderPersistenceStatus();renderHistory();
 }
 
 $$('.tab').forEach(btn=>btn.addEventListener('click',()=>{
   $$('.tab').forEach(x=>x.classList.remove('active'));$$('.tab-panel').forEach(x=>x.classList.remove('active'));btn.classList.add('active');$('#panel-'+btn.dataset.tab).classList.add('active');
 }));
-$('#todayDate').addEventListener('change',e=>{state.selectedDate=e.target.value||isoDate(new Date());saveState();renderAll();});
+$('#todayDate').addEventListener('change',e=>{state.selectedDate=e.target.value||isoDate(new Date());saveState({source:'manual',action:'planner-date-change',after:{selectedDate:state.selectedDate}});renderAll();});
 $('#optimizeTodayBtn').addEventListener('click',renderToday);
 $('#refreshScheduleBtn').addEventListener('click',refreshSchedule);
 $('#connectYahooBtn').addEventListener('click',()=>{window.location.href='/api/yahoo/login';});
@@ -795,19 +931,26 @@ $('#searchYahooPlayersBtn').addEventListener('click',searchYahooPlayers);
 $('#yahooPlayerSearch').addEventListener('keydown',e=>{if(e.key==='Enter')searchYahooPlayers();});
 $('#waiverFilterInput').addEventListener('input',renderWaivers);
 $('#waiverPositionFilter').addEventListener('change',renderWaivers);
+$('#refreshHistoryBtn').addEventListener('click',loadHistory);
 $('#disconnectYahooBtn').addEventListener('click',async()=>{if(!confirm('Disconnect Yahoo from this local Situation Room server?'))return;await fetchJson('/api/yahoo/disconnect',{method:'POST'});state.yahoo={...clone(seedState.yahoo)};saveState();await loadYahooStatus();renderAll();});
-$('#importWaiversBtn').addEventListener('click',()=>{const players=parsePlayerLines($('#waiverImport').value);if(!players.length){alert('No valid waiver lines found.');return;}state.waivers=players;saveState();renderAll();});
-$('#clearWaiversBtn').addEventListener('click',()=>{if(confirm('Clear the local waiver candidate pool?')){state.waivers=[];saveState();renderAll();}});
-$('#addRosterRowBtn').addEventListener('click',()=>{state.roster.push(normalizeLoadedPlayer({id:makeUuid(),name:'New player',team:'',positions:['C'],fppg:0,core:false,canDrop:true,selectedPosition:'BN',source:'manual'}));saveState();renderAll();});
-$('#importRosterBtn').addEventListener('click',()=>{const players=parsePlayerLines($('#rosterImport').value);if(!players.length){alert('No valid roster lines found.');return;}if(!confirm(`Replace the local roster with ${players.length} imported players?`))return;state.roster=players.map(normalizeLoadedPlayer);state.yahoo.rosterSource='Manual import';saveState();renderAll();});
-$('#movesUsedInput').addEventListener('change',e=>{state.movesThisWeek=Math.max(0,Math.min(league.maxAddsPerWeek,Number(e.target.value)||0));saveState();renderAll();});
+$('#importWaiversBtn').addEventListener('click',()=>{const players=parsePlayerLines($('#waiverImport').value);if(!players.length){alert('No valid waiver lines found.');return;}state.waivers=players;saveState({source:'manual',action:'waiver-import',metadata:{count:players.length}});renderAll();});
+$('#clearWaiversBtn').addEventListener('click',()=>{if(confirm('Clear the stored waiver candidate pool?')){const count=state.waivers.length;state.waivers=[];saveState({source:'manual',action:'waiver-clear',metadata:{count}});renderAll();}});
+$('#addRosterRowBtn').addEventListener('click',()=>{const player=normalizeLoadedPlayer({id:makeUuid(),name:'New player',team:'',positions:['C'],fppg:0,core:false,canDrop:true,selectedPosition:'BN',source:'manual'});state.roster.push(player);saveState({source:'manual',action:'roster-add',entityType:'player',entityId:player.id,after:player});renderAll();});
+$('#importRosterBtn').addEventListener('click',()=>{const players=parsePlayerLines($('#rosterImport').value);if(!players.length){alert('No valid roster lines found.');return;}if(!confirm(`Replace the local roster with ${players.length} imported players?`))return;state.roster=players.map(normalizeLoadedPlayer);state.yahoo.rosterSource='Manual import';saveState({source:'manual',action:'roster-import',metadata:{count:players.length}});renderAll();});
+$('#movesUsedInput').addEventListener('change',e=>{const before=state.movesThisWeek;state.movesThisWeek=Math.max(0,Math.min(league.maxAddsPerWeek,Number(e.target.value)||0));saveState({source:'manual',action:'moves-used-edit',before:{movesThisWeek:before},after:{movesThisWeek:state.movesThisWeek}});renderAll();});
 $('#copyBriefBtn').addEventListener('click',async()=>{try{await navigator.clipboard.writeText(buildBrief());$('#copyStatus').textContent='Situation Brief copied. Paste it into our ChatGPT conversation.';}catch{const ta=document.createElement('textarea');ta.value=buildBrief();document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove();$('#copyStatus').textContent='Situation Brief copied.';}});
 $('#exportBtn').addEventListener('click',exportState);
 $('#importFile').addEventListener('change',e=>{const f=e.target.files?.[0];if(f)importBackup(f);e.target.value='';});
-$('#resetBtn').addEventListener('click',()=>{if(confirm('Reset all local Dead Puck data to the v2 seed? Yahoo server credentials are not affected.')){localStorage.removeItem(STORAGE_KEY);state=clone(seedState);saveState();renderAll();}});
+$('#resetBtn').addEventListener('click',()=>{if(confirm('Reset the stored Situation Room data to the v2 seed? This will create a revision in history.')){const before=clone(state);localStorage.removeItem(STORAGE_KEY);localStorage.removeItem(LEGACY_STORAGE_KEY);state=clone(seedState);saveState({source:'manual',action:'state-reset',before,after:clone(state)});renderAll();}});
 
+try {
+  await loadPersistedState();
+} catch (err) {
+  $('#saveStatus').textContent='Site storage unavailable';
+  renderPersistenceStatus(err.message);
+}
 renderAll();
-await loadYahooStatus();
+await Promise.all([loadYahooStatus(),loadHistory()]);
 if (new URLSearchParams(window.location.search).get('yahoo')==='connected') {
   history.replaceState({},document.title,window.location.pathname);
   await loadYahooStatus();
