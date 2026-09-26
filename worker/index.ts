@@ -68,7 +68,7 @@ app.get("/api/health", async (context) => {
   await ensureSchema(context.env.DB);
   return context.json({
     ok: true,
-    version: "2.2.0-alpha.1",
+    version: "2.2.1-alpha.1",
     runtime: "chatgpt-sites",
     persistence: "d1",
   });
@@ -343,6 +343,16 @@ app.get("/api/yahoo/status", (context) => {
   });
 });
 
+app.all("/api/yahoo/*", (context) => {
+  return context.json(
+    {
+      error: "Yahoo integration is not configured yet.",
+      code: "YAHOO_NOT_CONFIGURED",
+    },
+    501,
+  );
+});
+
 app.get("/api/nhl/schedule", async (context) => {
   const date = String(context.req.query("date") ?? "");
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
@@ -386,7 +396,7 @@ async function readStateRow(database: D1Database, ownerId: string) {
 }
 
 function conflictResponse(
-  context: Parameters<typeof app.fetch>[1] extends never ? never : any,
+  context: any,
   current: StateRow | null,
   message: string,
   extra: Record<string, unknown> = {},
