@@ -2,7 +2,7 @@ name: Situation Room CI
 
 on:
   push:
-    branches: [ main, v2-yahoo-auth-sync-ui ]
+    branches: [ main, v2-yahoo-auth-sync-ui, v2.2-sites-persistence ]
   pull_request:
     branches: [ main ]
 
@@ -12,13 +12,18 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
-      - name: Syntax checks
+          node-version: '22.13.0'
+          cache: npm
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+      - name: Syntax and type checks
         run: npm run check
       - name: Unit tests
         run: npm test
+      - name: Build ChatGPT Site
+        run: npm run build
