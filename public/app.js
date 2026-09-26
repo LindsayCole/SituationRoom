@@ -750,7 +750,7 @@ async function syncYahoo() {
     ]);
     const available = [...parseYahooPlayers(availableDoc0,'yahoo-available'), ...parseYahooPlayers(availableDoc50,'yahoo-available')];
     const seen = new Set();
-    state.waivers = mergeYahooWaivers(available.filter(p=>p.yahooPlayerKey && !seen.has(p.yahooPlayerKey) && seen.add(p.yahooPlayerKey)));
+    state.waivers = replaceYahooWaiverPool(available.filter(p=>p.yahooPlayerKey && !seen.has(p.yahooPlayerKey) && seen.add(p.yahooPlayerKey)));
 
     state.yahoo.lastSyncAt = new Date().toISOString();
     state.yahoo.rosterDate = rosterDate;
@@ -798,11 +798,8 @@ async function searchYahooPlayers() {
     });
     if (position) params.set('position',position);
     const doc = await fetchXml('/api/yahoo/available?' + params.toString());
-    const incoming = mergeYahooWaivers(parseYahooPlayers(doc,'yahoo-search'));
-    const manual = state.waivers.filter(p=>!p.yahooPlayerKey);
-    const byKey = new Map(state.waivers.filter(p=>p.yahooPlayerKey).map(p=>[p.yahooPlayerKey,p]));
-    for (const p of incoming) byKey.set(p.yahooPlayerKey,p);
-    state.waivers = [...manual, ...byKey.values()];
+    const incoming = parseYahooPlayers(doc,'yahoo-search');
+    state.waivers = mergeYahooSearchIntoWaiverPool(incoming);
     state.yahoo.availableCount = state.waivers.length;
     const saved=await saveState({source:'yahoo',action:'yahoo-player-search',metadata:{query,position,matched:incoming.length}});
     if (!saved) throw new Error(storageError || 'Yahoo search results could not be persisted.');
@@ -1049,7 +1046,7 @@ function renderRoster() {
       <td>${owned}</td>
       <td>${goalie?`<input class="r-start input-small" type="number" step="5" min="0" max="100" value="${Math.round((Number(p.startProbability)||0)*100)}" />`:'<span class="mini-note">n/a</span>'}</td>
       <td class="checkbox-cell"><input class="r-core" type="checkbox" ${p.core?'checked':''} /></td>
-      <td class="checkbox-cell"><input class="r-drop" type="checkbox" ${p.canDrop!==false?'checked':''} ${p.core?'disabled':''} /></td>
+      <td class="checkbox-cell"><input class="r-drop" type="checkbox" ${p.canDrop!==false?'checked':''} ${p.core||p.yahooUndroppable?'disabled':''} title="${p.yahooUndroppable?'Yahoo marks this player cant-cut':''}" />${p.yahooUndroppable?'<div class="mini-note">Yahoo cant-cut</div>':''}</td>
       <td><button class="btn small-btn remove-roster">Remove</button></td>
     </tr>`);
   });
@@ -1075,7 +1072,8 @@ function handleRosterEdit(e) {
   p.status=tr.querySelector('.r-status').value.trim().toUpperCase();
   if (e.target.classList.contains('r-fppg')) applyProjectionInput(p,tr.querySelector('.r-fppg').value);
   p.core=tr.querySelector('.r-core').checked;
-  p.canDrop=p.core?false:tr.querySelector('.r-drop').checked;
+  if (e.target.classList.contains('r-drop')) p.manualCanDrop=tr.querySelector('.r-drop').checked;
+  p.canDrop=!p.core && p.manualCanDrop!==false && !p.yahooUndroppable;
   p.startProbability=isGoalie(p)?Math.max(0,Math.min(1,(Number(tr.querySelector('.r-start')?.value)||0)/100)):1;
   saveState({source:'manual',action:'roster-edit',entityType:'player',entityId:p.yahooPlayerKey||p.id,before,after:clone(p)});renderAll();
 }
@@ -1099,7 +1097,7 @@ function buildBrief() {
     dataQuality:{scheduleWindowComplete:scheduleReady,rosterProjectionsComplete:projectionsReady,unknownProjectionMeans:null},
     dataSources:{roster:state.yahoo.rosterSource,yahooLastSync:state.yahoo.lastSyncAt,nhlScheduleFetchedAt:state.scheduleFetchedAt},
     league:{yahooLeagueId:league.id,name:league.name,teams:league.teams,scoringType:league.scoringType,maxAddsPerWeek:league.maxAddsPerWeek,movesUsedThisWeek:state.movesThisWeek,waiverPriority:league.waiverPriority,waiverType:league.waiverType,lineupDeadline:league.lineupDeadline,activeSlots:league.activeSlots,skaterScoring:league.skaterScoring,goalieScoring:league.goalieScoring},
-    roster:state.roster.map(p=>({name:p.name,team:p.team,positions:p.positions,yahooSlot:p.selectedPosition,status:p.status,fppg:hasProjection(p)?Number(p.fppg):null,core:p.core,canDrop:p.canDrop,startProbability:isGoalie(p)?p.startProbability:1,yahooSeasonPoints:p.yahooSeasonPoints,percentOwned:p.percentOwned,projectionSource:p.projectionSource,source:p.source})),
+    roster:state.roster.map(p=>({name:p.name,team:p.team,positions:p.positions,yahooSlot:p.selectedPosition,status:p.status,fppg:hasProjection(p)?Number(p.fppg):null,core:p.core,manualCanDrop:p.manualCanDrop,canDrop:p.canDrop,yahooUndroppable:p.yahooUndroppable,startProbability:isGoalie(p)?p.startProbability:1,yahooSeasonPoints:p.yahooSeasonPoints,percentOwned:p.percentOwned,projectionSource:p.projectionSource,source:p.source})),
     next7Days:w.days.map(d=>({date:d.date,nhlGames:Object.prototype.hasOwnProperty.call(state.schedule,d.date)?d.games:null,night:Object.prototype.hasOwnProperty.call(state.schedule,d.date)?d.nightClass:null,rosterTeamGames:d.scheduled.map(p=>p.name),starters:d.starters.map(x=>({slot:league.activeSlots[x.slotIndex],player:x.player.name,availability:x.player.availability,projectionKnown:hasProjection(x.player)})),blocked:d.blocked.map(p=>p.name),goalieStartsUnconfirmed:d.goalieUnconfirmed.map(p=>p.name),projectedPoints:projectionsReady&&scheduleReady?Number(d.points.toFixed(2)):null})),
     summary:{expectedUsableStarts:scheduleReady?Number(w.usableGames.toFixed(2)):null,scheduledRosterTeamGames:scheduleReady?w.scheduledGames:null,projectedPoints:projectionsReady&&scheduleReady?Number(w.points.toFixed(2)):null,blockedProjectedPoints:projectionsReady&&scheduleReady?Number(w.leakage.toFixed(2)):null},
     waiverCandidates:waiverRows.map(({candidate:c,analysis:a})=>({name:c.name,team:c.team,positions:c.positions,fppg:hasProjection(c)?Number(c.fppg):null,yahooSeasonPoints:c.yahooSeasonPoints,percentOwned:c.percentOwned,ownershipType:c.ownershipType,projectionSource:c.projectionSource,games7d:a.games,lightNights:a.light,bestDrop:Number.isFinite(a.delta)?(a.drop?.name||'Open slot'):null,projectedNetGain:Number.isFinite(a.delta)?Number(a.delta.toFixed(2)):null,expectedStartsDelta:Number.isFinite(a.usableDelta)?Number(a.usableDelta.toFixed(2)):null})),
