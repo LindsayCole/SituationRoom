@@ -255,6 +255,22 @@ let yahooStatus = { configured:false, connected:false, writeEnabled:false, readO
 let storageError = '';
 let storageConflict = false;
 
+function makeSaveEntry(change={}, snapshot=clone(state)) {
+  return {
+    snapshot,
+    change:{
+      source:change.source || 'manual',
+      action:change.action || 'state-update',
+      entityType:change.entityType || null,
+      entityId:change.entityId || null,
+      before:change.before,
+      after:change.after,
+      metadata:change.metadata,
+      clientChangeId:change.clientChangeId || makeUuid()
+    }
+  };
+}
+
 function persistRecoveryCopy(failedAt=null) {
   if (!pendingSaves.length) {
     localStorage.removeItem(PENDING_RECOVERY_KEY);
@@ -266,12 +282,14 @@ function persistRecoveryCopy(failedAt=null) {
     action:entry.change.action,
     entityType:entry.change.entityType,
     entityId:entry.change.entityId,
+    before:entry.change.before,
+    after:entry.change.after,
     metadata:entry.change.metadata,
     clientChangeId:entry.change.clientChangeId
   }));
   try {
     localStorage.setItem(PENDING_RECOVERY_KEY,JSON.stringify({
-      version:2,
+      version:3,
       state:latest.snapshot,
       baseRevision:stateRevision,
       pendingChanges,
@@ -280,6 +298,92 @@ function persistRecoveryCopy(failedAt=null) {
   } catch (err) {
     console.warn('Emergency recovery copy could not be written.',err);
   }
+}
+
+function enterRecoveryConflict(recovery, message) {
+  state=normalizeState(recovery.state);
+  storageConflict=true;
+  storageError=message;
+  $('#saveStatus').textContent='Recovery conflict · browser copy loaded';
+}
+
+async function replayRecovery(recovery, hasStoredState) {
+  if (!recovery?.state) return true;
+  const desired=normalizeState(recovery.state);
+  const base=Number(recovery.baseRevision);
+  const hasBase=Number.isInteger(base) && base>=0;
+  const changes=Array.isArray(recovery.pendingChanges)
+    ? recovery.pendingChanges.filter(x=>x&&typeof x==='object')
+    : [];
+
+  // Compatibility with the earlier recovery format. It is safe to restore
+  // automatically only when there is no authoritative Site state yet.
+  if (!hasBase || !changes.length) {
+    if (hasStoredState) {
+      enterRecoveryConflict(
+        recovery,
+        'An older browser recovery copy exists alongside stored Site data. Export the recovered view if needed, then use “Reload Site state” to keep the authoritative version.'
+      );
+      return false;
+    }
+    state=desired;
+    const saved=await saveState({
+      source:'system',
+      action:'recovery-restore',
+      metadata:{recoveredFrom:recovery.failedAt || null}
+    });
+    if (saved) localStorage.removeItem(PENDING_RECOVERY_KEY);
+    return saved;
+  }
+
+  if (stateRevision < base) {
+    enterRecoveryConflict(
+      recovery,
+      'The recovery copy was created from a newer revision than this Site currently reports. It was not replayed automatically.'
+    );
+    return false;
+  }
+
+  let applied=0;
+  if (stateRevision > base) {
+    if (stateRevision-base > 250) {
+      enterRecoveryConflict(
+        recovery,
+        'The Site advanced too far beyond the recovery base to verify the pending change sequence safely.'
+      );
+      return false;
+    }
+    const history=await fetchJson('/api/changes?limit=250');
+    const byRevision=new Map((history.changes||[]).map(row=>[Number(row.revision),row]));
+    for (let i=0;i<changes.length;i++) {
+      const row=byRevision.get(base+i+1);
+      if (row?.clientChangeId && row.clientChangeId===changes[i].clientChangeId) applied++;
+      else break;
+    }
+    if (stateRevision !== base+applied) {
+      enterRecoveryConflict(
+        recovery,
+        'The Site contains changes that are not the verified prefix of this browser recovery queue. The recovered view is preserved, but it was not allowed to overwrite newer state.'
+      );
+      return false;
+    }
+  }
+
+  if (applied===changes.length) {
+    localStorage.removeItem(PENDING_RECOVERY_KEY);
+    return true;
+  }
+
+  state=desired;
+  const snapshot=clone(state);
+  for (const change of changes.slice(applied)) {
+    pendingSaves.push(makeSaveEntry(change,snapshot));
+  }
+  persistRecoveryCopy(recovery.failedAt || null);
+  $('#saveStatus').textContent='Replaying recovered saves…';
+  const saved=await drainSaveQueue();
+  if (saved) localStorage.removeItem(PENDING_RECOVERY_KEY);
+  return saved;
 }
 
 async function loadPersistedState() {
@@ -292,42 +396,15 @@ async function loadPersistedState() {
     stateRevision = Number(stored.revision) || 0;
     stateUpdatedAt = stored.updatedAt || null;
     $('#saveStatus').textContent = `Saved to Site · rev ${stateRevision}`;
-
-    if (!recovery?.state) return;
-
-    if (Number(recovery.baseRevision) === stateRevision) {
-      state=normalizeState(recovery.state);
-      const pendingActions=Array.isArray(recovery.pendingChanges)
-        ? recovery.pendingChanges.map(x=>x?.action).filter(Boolean)
-        : [];
-      const saved=await saveState({
-        source:'system',
-        action:'recovery-restore',
-        metadata:{pendingActions,recoveredFrom:recovery.failedAt || null}
-      });
-      if (saved) localStorage.removeItem(PENDING_RECOVERY_KEY);
-      return;
-    }
-
-    state=normalizeState(recovery.state);
-    storageConflict=true;
-    storageError='A browser recovery copy exists, but the Site has newer state. Export this recovered view if needed, then use “Reload Site state” to discard it.';
-    $('#saveStatus').textContent='Recovery conflict · browser copy loaded';
+    if (recovery?.state) await replayRecovery(recovery,true);
     return;
   }
 
+  stateRevision=0;
+  stateUpdatedAt=null;
   if (recovery?.state) {
-    state=normalizeState(recovery.state);
-    const pendingActions=Array.isArray(recovery.pendingChanges)
-      ? recovery.pendingChanges.map(x=>x?.action).filter(Boolean)
-      : [];
-    const saved=await saveState({
-      source:'system',
-      action:'recovery-restore',
-      metadata:{pendingActions,recoveredFrom:recovery.failedAt || null}
-    });
-    if (!saved) throw new Error(storageError || 'Recovered Site state could not be saved.');
-    localStorage.removeItem(PENDING_RECOVERY_KEY);
+    const restored=await replayRecovery(recovery,false);
+    if (!restored) throw new Error(storageError || 'Recovered Site state could not be saved.');
     return;
   }
 
@@ -346,20 +423,7 @@ async function loadPersistedState() {
 }
 
 function saveState(change={}) {
-  const entry={
-    snapshot:clone(state),
-    change:{
-      source:change.source || 'manual',
-      action:change.action || 'state-update',
-      entityType:change.entityType || null,
-      entityId:change.entityId || null,
-      before:change.before,
-      after:change.after,
-      metadata:change.metadata,
-      clientChangeId:makeUuid()
-    }
-  };
-  pendingSaves.push(entry);
+  pendingSaves.push(makeSaveEntry(change));
   persistRecoveryCopy();
   $('#saveStatus').textContent = storageConflict ? 'Save blocked by conflict' : 'Saving to Site…';
   return drainSaveQueue();
@@ -399,6 +463,7 @@ function drainSaveQueue() {
           entityType:entry.change.entityType,
           entityId:entry.change.entityId,
           metadata:entry.change.metadata || null,
+          clientChangeId:entry.change.clientChangeId,
           createdAt:stateUpdatedAt
         });
         historyRows=historyRows.slice(0,100);
