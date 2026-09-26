@@ -1145,7 +1145,7 @@ function renderRoster() {
     const owned=p.percentOwned==null?'—':`${p.percentOwned.toFixed(0)}%`;
     body.insertAdjacentHTML('beforeend',`<tr data-id="${esc(p.id)}">
       <td><div class="player-cell">${playerAvatar(p)}<div><input class="r-name" ${locked} value="${esc(p.name)}" /><div class="mini-note">${esc(p.source||'local')}</div></div></div></td>
-      <td><input class="r-team input-tiny" ${locked} value="${esc(p.team)}" maxlength="4" /><div class="mini-note">${esc((p.positions||[]).join('/'))}</div><input class="r-pos visually-hidden" ${locked} value="${esc((p.positions||[]).join('/'))}" /></td>
+      <td><input class="r-team input-tiny" ${locked} value="${esc(p.team)}" maxlength="4" /><input class="r-pos input-small" ${locked} value="${esc((p.positions||[]).join('/'))}" aria-label="Eligible positions for ${esc(p.name)}" /></td>
       <td><input class="r-selected input-tiny" ${locked} value="${esc(p.selectedPosition||'BN')}" /></td>
       <td><input class="r-status input-tiny" ${locked} value="${esc(p.status||'')}" placeholder="Active" /></td>
       <td><input class="r-fppg input-small" type="number" step="0.01" min="-20" max="30" value="${esc(projectionInputValue(p))}" /><div class="mini-note">${esc(projectionLabel(p))}</div></td>
