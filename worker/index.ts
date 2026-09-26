@@ -379,12 +379,11 @@ app.notFound(async (context) => {
     const headers = new Headers(asset.headers);
     headers.set("X-Content-Type-Options", "nosniff");
     headers.set("Referrer-Policy", "same-origin");
-    headers.set("X-Frame-Options", "DENY");
     headers.set("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
     if (headers.get("Content-Type")?.includes("text/html")) {
       headers.set(
         "Content-Security-Policy",
-        "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' https: data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
+        "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' https: data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'",
       );
     }
     return new Response(asset.body, {
