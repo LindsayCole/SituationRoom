@@ -587,11 +587,22 @@ function parseYahooPlayers(doc, source='yahoo') {
   return players;
 }
 
+function playerFallbackIdentity(player) {
+  return `${String(player?.name||'').trim().toLowerCase()}|${String(player?.team||'').trim().toUpperCase()}`;
+}
+
+function findExistingPlayer(collection, incoming) {
+  if (incoming?.yahooPlayerKey) {
+    const keyed=collection.find(p=>p.yahooPlayerKey===incoming.yahooPlayerKey);
+    if (keyed) return keyed;
+  }
+  const identity=playerFallbackIdentity(incoming);
+  return collection.find(p=>playerFallbackIdentity(p)===identity) || null;
+}
+
 function mergeYahooRoster(yahooPlayers) {
-  const oldByKey = new Map(state.roster.filter(p=>p.yahooPlayerKey).map(p=>[p.yahooPlayerKey,p]));
-  const oldByName = new Map(state.roster.map(p=>[p.name.toLowerCase(),p]));
   return yahooPlayers.map(p=>{
-    const old = oldByKey.get(p.yahooPlayerKey) || oldByName.get(p.name.toLowerCase());
+    const old = findExistingPlayer(state.roster,p);
     return normalizeLoadedPlayer({
       ...p,
       id: old?.id || p.id,
@@ -612,10 +623,8 @@ function mergeYahooRoster(yahooPlayers) {
 }
 
 function mergeYahooWaivers(yahooPlayers) {
-  const oldByKey = new Map(state.waivers.filter(p=>p.yahooPlayerKey).map(p=>[p.yahooPlayerKey,p]));
-  const oldByName = new Map(state.waivers.map(p=>[p.name.toLowerCase(),p]));
   return yahooPlayers.map(p=>{
-    const old = oldByKey.get(p.yahooPlayerKey) || oldByName.get(p.name.toLowerCase());
+    const old = findExistingPlayer(state.waivers,p);
     return normalizeLoadedPlayer({
       ...p,
       id: old?.id || p.id,
@@ -633,18 +642,18 @@ function mergeYahooWaivers(yahooPlayers) {
 
 function replaceYahooWaiverPool(yahooPlayers) {
   const merged=mergeYahooWaivers(yahooPlayers);
-  const matchedNames=new Set(merged.map(p=>p.name.toLowerCase()));
-  const manualUnmatched=state.waivers.filter(p=>!p.yahooPlayerKey && !matchedNames.has(p.name.toLowerCase()));
+  const matchedIdentities=new Set(merged.map(playerFallbackIdentity));
+  const manualUnmatched=state.waivers.filter(p=>!p.yahooPlayerKey && !matchedIdentities.has(playerFallbackIdentity(p)));
   return [...manualUnmatched,...merged];
 }
 
 function mergeYahooSearchIntoWaiverPool(yahooPlayers) {
   const incoming=mergeYahooWaivers(yahooPlayers);
   const incomingKeys=new Set(incoming.map(p=>p.yahooPlayerKey).filter(Boolean));
-  const incomingNames=new Set(incoming.map(p=>p.name.toLowerCase()));
+  const incomingIdentities=new Set(incoming.map(playerFallbackIdentity));
   const retained=state.waivers.filter(p=>{
     if (p.yahooPlayerKey) return !incomingKeys.has(p.yahooPlayerKey);
-    return !incomingNames.has(p.name.toLowerCase());
+    return !incomingIdentities.has(playerFallbackIdentity(p));
   });
   return [...retained,...incoming];
 }
