@@ -79,3 +79,93 @@ These are not silent TODOs. They are the next development steps.
 ## Recommendation for the next implementation pass
 
 After Yahoo credentials are configured, the next pass should validate the live XML payloads, finish transaction/week parsing, then add a projection provider. That order avoids building calculations around imagined API shapes.
+
+
+# v2.1 code review — Yahoo auth, sync and player presentation
+
+Review date: 2026-09-26
+
+## Additional defects found and remediated
+
+### 8. Missing Yahoo numeric values were silently converted to zero
+**Severity:** High for data quality.
+
+JavaScript converts `null` to numeric zero. The v2 normalization path therefore turned an absent Yahoo season-points value into `0`, making "not returned" indistinguishable from a real zero.
+
+**v2.1 fix:** nullable Yahoo numeric fields now preserve `null` explicitly.
+
+### 9. Yahoo roster sync did not request player stats
+**Severity:** High for presentation/analytics.
+
+The roster endpoint requested player metadata only, so `Yahoo pts` on roster players could never populate even though the UI exposed the field.
+
+**v2.1 fix:** roster reads now request player `stats` and `percent_owned` sub-resources in league context.
+
+### 10. Yahoo roster sync used the planner's selected date
+**Severity:** Medium/High.
+
+Changing the 7-day planner to a future date before syncing could cause the room to display that date's Yahoo roster/slot assignment as if it were the current roster.
+
+**v2.1 fix:** normal Yahoo sync always reads today's roster and records the roster date separately. Planner date remains independent.
+
+### 11. Yahoo rostered percentage was parsed and then discarded
+**Severity:** Medium.
+
+`percent_owned` was extracted from Yahoo XML but not retained by the normalization layer.
+
+**v2.1 fix:** the player model preserves rostered percentage, image URL, waiver date, ownership type and projection provenance.
+
+### 12. Players without a projection could appear actionable
+**Severity:** High for recommendations.
+
+Yahoo-synced players arrive with identity/stats, not a trustworthy forward FPPG projection. Treating the default `0` as a real projection could create meaningless add/drop rankings.
+
+**v2.1 fix:** Yahoo players now have an explicit `projectionSource=unset`. Add/drop staging is disabled until a projection is supplied. Schedule information remains visible.
+
+### 13. Injured goalies were mislabeled as "start unconfirmed"
+**Severity:** Medium.
+
+A goalie on IR/IR+/NA/O whose NHL team played could be surfaced as a healthy goalie whose starter status was unknown.
+
+**v2.1 fix:** unavailable players are separated from healthy-but-unconfirmed goalies and excluded from scheduled usable-game counts.
+
+### 14. Yahoo API responses could be cached by the browser/intermediary
+**Severity:** Medium/security hygiene.
+
+Private Yahoo XML/JSON responses did not explicitly set a no-store cache policy.
+
+**v2.1 fix:** Yahoo/API JSON and XML responses now emit `Cache-Control: no-store`.
+
+### 15. Encrypted token location depended on Node's launch directory
+**Severity:** Medium/operational.
+
+The encrypted token file used `path.resolve('.data/...')`, which resolves against process working directory.
+
+**v2.1 fix:** token storage is anchored to the application directory regardless of where Node is launched.
+
+### 16. No automated CI existed
+**Severity:** Engineering quality.
+
+Syntax and unit tests had been run manually but GitHub did not enforce them on changes.
+
+**v2.1 fix:** GitHub Actions now runs Node 20 syntax checks and the unit suite on pushes and pull requests.
+
+## Yahoo player workflow added in v2.1
+
+1. OAuth remains server-side.
+2. Situation Room discovers the signed-in user's active NHL fantasy team.
+3. Normal sync reads today's Yahoo roster with roster slot, injury/status, cant-cut flag, season fantasy points and rostered percentage where Yahoo supplies them.
+4. The top 100 available players are loaded by Yahoo season fantasy points.
+5. Additional available players can be searched on demand by name and optional position instead of enumerating the complete league player pool.
+6. Yahoo identity fields are treated as authoritative in the UI.
+7. Situation Room projection fields remain separate and editable.
+8. A waiver candidate cannot be staged locally until a projection has been supplied.
+
+## Still intentionally incomplete
+
+- Live OAuth/token exchange must be validated with the user's approved Yahoo application.
+- Yahoo response shapes should be captured from that live test and retained as fixtures for parser regression tests.
+- Weekly acquisition usage is still manual.
+- Forward-looking player FPPG is still a separate projection problem; Yahoo season points are context, not automatically treated as a forecast.
+- Goalie starter probability still needs a provider.
+- No Yahoo write operations are implemented.
