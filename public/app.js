@@ -879,7 +879,7 @@ function renderWaivers() {
       <td>${c.yahooSeasonPoints==null?'—':Number(c.yahooSeasonPoints).toFixed(1)}</td>
       <td>${a.games}</td>
       <td>${a.light}</td>
-      <td>${!projectionReady?'<span class="muted">Projection needed</span>':!actionable?'No legal drop':a.drop?esc(a.drop.name):'<span class="gain-pos">Open slot</span>'}</td>
+      <td>${!scheduleReady?'<span class="muted">Schedule needed</span>':!projectionReady?'<span class="muted">Projection needed</span>':!actionable?'No legal drop':a.drop?esc(a.drop.name):'<span class="gain-pos">Open slot</span>'}</td>
       <td class="${gainCls}">${deltaText}${scheduleReady && actionable?` <span class="mini-note">(${a.usableDelta>=0?'+':''}${a.usableDelta.toFixed(1)} starts)</span>`:''}</td>
       <td><button class="btn small-btn stage-waiver" data-id="${esc(c.id)}" ${buttonDisabled?'disabled':''}>${buttonLabel}</button></td>
     </tr>`);
@@ -1026,7 +1026,7 @@ $$('.tab').forEach(btn=>btn.addEventListener('click',()=>{
 $('#todayDate').addEventListener('change',e=>{state.selectedDate=e.target.value||isoDate(new Date());saveState({source:'manual',action:'planner-date-change',after:{selectedDate:state.selectedDate}});renderAll();});
 $('#optimizeTodayBtn').addEventListener('click',renderToday);
 $('#refreshScheduleBtn').addEventListener('click',refreshSchedule);
-$('#connectYahooBtn').addEventListener('click',()=>{window.location.href='/api/yahoo/login';});
+$('#connectYahooBtn').addEventListener('click',()=>{if(!yahooStatus.configured){alert('Yahoo integration is not configured yet.');return;}window.location.href='/api/yahoo/login';});
 $('#syncYahooBtn').addEventListener('click',syncYahoo);
 $('#syncYahooHeaderBtn').addEventListener('click',syncYahoo);
 $('#searchYahooPlayersBtn').addEventListener('click',searchYahooPlayers);
@@ -1034,11 +1034,13 @@ $('#yahooPlayerSearch').addEventListener('keydown',e=>{if(e.key==='Enter')search
 $('#waiverFilterInput').addEventListener('input',renderWaivers);
 $('#waiverPositionFilter').addEventListener('change',renderWaivers);
 $('#refreshHistoryBtn').addEventListener('click',loadHistory);
-$('#disconnectYahooBtn').addEventListener('click',async()=>{if(!confirm('Disconnect Yahoo from this local Situation Room server?'))return;await fetchJson('/api/yahoo/disconnect',{method:'POST'});state.yahoo={...clone(seedState.yahoo)};saveState();await loadYahooStatus();renderAll();});
+$('#retryStorageBtn').addEventListener('click',()=>{storageError='';storageConflict=false;drainSaveQueue();renderPersistenceStatus();});
+$('#reloadSiteStateBtn').addEventListener('click',()=>{if(!confirm('Discard the browser recovery copy and reload the authoritative Site state? Export JSON first if you need to preserve the recovered view.'))return;localStorage.removeItem(PENDING_RECOVERY_KEY);location.reload();});
+$('#disconnectYahooBtn').addEventListener('click',async()=>{if(!yahooStatus.connected)return;if(!confirm('Disconnect Yahoo from this Situation Room Site?'))return;await fetchJson('/api/yahoo/disconnect',{method:'POST'});state.yahoo={...clone(seedState.yahoo)};saveState({source:'yahoo',action:'yahoo-disconnect'});await loadYahooStatus();renderAll();});
 $('#importWaiversBtn').addEventListener('click',()=>{const players=parsePlayerLines($('#waiverImport').value);if(!players.length){alert('No valid waiver lines found.');return;}state.waivers=players;saveState({source:'manual',action:'waiver-import',metadata:{count:players.length}});renderAll();});
 $('#clearWaiversBtn').addEventListener('click',()=>{if(confirm('Clear the stored waiver candidate pool?')){const count=state.waivers.length;state.waivers=[];saveState({source:'manual',action:'waiver-clear',metadata:{count}});renderAll();}});
-$('#addRosterRowBtn').addEventListener('click',()=>{const player=normalizeLoadedPlayer({id:makeUuid(),name:'New player',team:'',positions:['C'],fppg:0,core:false,canDrop:true,selectedPosition:'BN',source:'manual'});state.roster.push(player);saveState({source:'manual',action:'roster-add',entityType:'player',entityId:player.id,after:player});renderAll();});
-$('#importRosterBtn').addEventListener('click',()=>{const players=parsePlayerLines($('#rosterImport').value);if(!players.length){alert('No valid roster lines found.');return;}if(!confirm(`Replace the local roster with ${players.length} imported players?`))return;state.roster=players.map(normalizeLoadedPlayer);state.yahoo.rosterSource='Manual import';saveState({source:'manual',action:'roster-import',metadata:{count:players.length}});renderAll();});
+$('#addRosterRowBtn').addEventListener('click',()=>{const player=normalizeLoadedPlayer({id:makeUuid(),name:'New player',team:'',positions:['C'],fppg:0,core:false,canDrop:true,selectedPosition:'BN',source:'manual',projectionSource:'unset'});state.roster.push(player);saveState({source:'manual',action:'roster-add',entityType:'player',entityId:player.id,after:player});renderAll();});
+$('#importRosterBtn').addEventListener('click',()=>{const players=parsePlayerLines($('#rosterImport').value);if(!players.length){alert('No valid roster lines found.');return;}if(!confirm(`Replace the stored roster with ${players.length} imported players?`))return;state.roster=players.map(normalizeLoadedPlayer);state.yahoo.rosterSource='Manual import';saveState({source:'manual',action:'roster-import',metadata:{count:players.length}});renderAll();});
 $('#movesUsedInput').addEventListener('change',e=>{const before=state.movesThisWeek;state.movesThisWeek=Math.max(0,Math.min(league.maxAddsPerWeek,Number(e.target.value)||0));saveState({source:'manual',action:'moves-used-edit',before:{movesThisWeek:before},after:{movesThisWeek:state.movesThisWeek}});renderAll();});
 $('#copyBriefBtn').addEventListener('click',async()=>{try{await navigator.clipboard.writeText(buildBrief());$('#copyStatus').textContent='Situation Brief copied. Paste it into our ChatGPT conversation.';}catch{const ta=document.createElement('textarea');ta.value=buildBrief();document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove();$('#copyStatus').textContent='Situation Brief copied.';}});
 $('#exportBtn').addEventListener('click',exportState);
@@ -1048,8 +1050,9 @@ $('#resetBtn').addEventListener('click',()=>{if(confirm('Reset the stored Situat
 try {
   await loadPersistedState();
 } catch (err) {
+  storageError=err.message || 'Site storage unavailable.';
   $('#saveStatus').textContent='Site storage unavailable';
-  renderPersistenceStatus(err.message);
+  renderPersistenceStatus();
 }
 renderAll();
 await Promise.all([loadYahooStatus(),loadHistory()]);
