@@ -16,6 +16,7 @@
         <p class="subhead">Maximize usable starts. Exploit light nights. Stop donating points to the bench.</p>
       </div>
       <div class="header-actions">
+        <div class="status-pill" id="siteStorageStatus">Site storage: loading…</div>
         <div class="status-pill" id="yahooHeaderStatus">Yahoo: checking…</div>
         <div class="status-pill" id="scheduleStatus">NHL schedule: not loaded</div>
         <button class="btn" id="syncYahooHeaderBtn" hidden>Sync Yahoo</button>
@@ -24,8 +25,8 @@
     </header>
 
     <section class="notice" id="seedNotice">
-      <strong>v2 is Yahoo-ready, but still safe by default.</strong>
-      Yahoo Fantasy API access is read-only unless Yahoo explicitly approves write access. The site will sync data, not silently make transactions.
+      <strong>Persistent ChatGPT Site storage is now the source of truth.</strong>
+      Roster edits, projections, manual imports, schedule refreshes and future Yahoo syncs are saved as durable revisions with change history. Yahoo transactions remain disabled.
     </section>
 
     <section class="kpi-grid">
@@ -43,6 +44,7 @@
       <button class="tab" data-tab="waivers">Waiver Command</button>
       <button class="tab" data-tab="roster">My Roster</button>
       <button class="tab" data-tab="yahoo">Yahoo Sync</button>
+      <button class="tab" data-tab="history">History / Storage</button>
       <button class="tab" data-tab="league">League</button>
       <button class="tab" data-tab="bridge">ChatGPT Bridge</button>
     </nav>
@@ -121,13 +123,49 @@
             <dl class="kv-list"><div><dt>Team key</dt><dd id="teamKeyValue">—</dd></div><div><dt>League key</dt><dd id="leagueKeyValue">—</dd></div><div><dt>Roster date</dt><dd id="rosterDateValue">—</dd></div><div><dt>Roster source</dt><dd id="rosterSourceValue">Local</dd></div></dl>
           </article>
           <article class="card">
-            <h3>OAuth configuration</h3>
-            <dl class="kv-list"><div><dt>Missing env vars</dt><dd id="yahooMissingConfig">Checking…</dd></div><div><dt>Redirect URI</dt><dd><code id="yahooRedirectUri">Checking…</code></dd></div></dl>
-            <div class="mini-note">The redirect URI shown here must exactly match the Yahoo Developer application callback.</div>
+            <h3>Yahoo application integration</h3>
+            <dl class="kv-list"><div><dt>Site secret status</dt><dd id="yahooMissingConfig">Checking…</dd></div><div><dt>OAuth callback</dt><dd><code id="yahooRedirectUri">Pending Yahoo phase</code></dd></div></dl>
+            <div class="mini-note">Yahoo credentials will be configured as ChatGPT Site secrets. They will not be stored in browser data or committed to GitHub.</div>
           </article>
         </div>
         <div class="action-banner" id="yahooSyncLog">Yahoo sync has not run yet.</div>
         <p class="muted yahoo-attribution"><a href="https://sports.yahoo.com/fantasy/" target="_blank" rel="noopener noreferrer">Fantasy data provided by Yahoo Fantasy</a>. Official Yahoo Fantasy logo/branding still needs to be added before any public deployment.</p>
+      </section>
+
+
+      <section class="panel tab-panel" id="panel-history">
+        <div class="panel-head">
+          <div><div class="eyebrow">DURABLE SITE STATE</div><h2>History & storage</h2></div>
+          <button class="btn" id="refreshHistoryBtn">Refresh history</button>
+        </div>
+        <div class="bridge-grid">
+          <article class="card">
+            <h3>Storage status</h3>
+            <p id="storageStatusText">Loading Site storage…</p>
+            <dl class="kv-list">
+              <div><dt>Current revision</dt><dd id="storageRevision">0</dd></div>
+              <div><dt>Last stored</dt><dd id="storageUpdatedAt">Never</dd></div>
+              <div><dt>Authoritative store</dt><dd>ChatGPT Sites D1</dd></div>
+            </dl>
+          </article>
+          <article class="card">
+            <h3>Persistence policy</h3>
+            <ul class="clean-list">
+              <li>Every saved state receives a monotonically increasing revision.</li>
+              <li>Each revision also writes an append-only change record.</li>
+              <li>Manual changes and future Yahoo syncs use the same store.</li>
+              <li>Two stale browser sessions cannot silently overwrite one another.</li>
+              <li>Browser storage is used only as emergency recovery if a Site save fails.</li>
+            </ul>
+          </article>
+        </div>
+        <h3>Recent stored changes</h3>
+        <div class="table-wrap">
+          <table class="wide-table">
+            <thead><tr><th>Revision</th><th>Time</th><th>Source</th><th>Action</th><th>Details</th></tr></thead>
+            <tbody id="historyTable"></tbody>
+          </table>
+        </div>
       </section>
 
       <section class="panel tab-panel" id="panel-league">
