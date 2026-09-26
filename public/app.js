@@ -236,31 +236,39 @@ function persistRecoveryCopy(failedAt=null) {
 
 async function loadPersistedState() {
   $('#saveStatus').textContent = 'Loading Site storage…';
+  const recovery=readPendingRecovery();
   const stored = await fetchJson('/api/state');
+
   if (stored.state) {
     state = normalizeState(stored.state);
     stateRevision = Number(stored.revision) || 0;
     stateUpdatedAt = stored.updatedAt || null;
     $('#saveStatus').textContent = `Saved to Site · rev ${stateRevision}`;
-  } else {
-    const browser = loadBrowserStateForMigration();
-    state = browser?.state || clone(seedState);
-    const saved = await saveState({
-      source:'system',
-      action:browser ? 'migrate-browser-state' : 'initialize-state',
-      metadata:{browserSource:browser?.source || null}
-    });
-    if (!saved) throw new Error(storageError || 'Initial Site state could not be saved.');
-    if (browser) {
-      localStorage.removeItem(STORAGE_KEY);
-      localStorage.removeItem(LEGACY_STORAGE_KEY);
+
+    if (!recovery?.state) return;
+
+    if (Number(recovery.baseRevision) === stateRevision) {
+      state=normalizeState(recovery.state);
+      const pendingActions=Array.isArray(recovery.pendingChanges)
+        ? recovery.pendingChanges.map(x=>x?.action).filter(Boolean)
+        : [];
+      const saved=await saveState({
+        source:'system',
+        action:'recovery-restore',
+        metadata:{pendingActions,recoveredFrom:recovery.failedAt || null}
+      });
+      if (saved) localStorage.removeItem(PENDING_RECOVERY_KEY);
+      return;
     }
+
+    state=normalizeState(recovery.state);
+    storageConflict=true;
+    storageError='A browser recovery copy exists, but the Site has newer state. Export this recovered view if needed, then use “Reload Site state” to discard it.';
+    $('#saveStatus').textContent='Recovery conflict · browser copy loaded';
+    return;
   }
 
-  const recovery=readPendingRecovery();
-  if (!recovery?.state) return;
-
-  if (Number(recovery.baseRevision) === stateRevision) {
+  if (recovery?.state) {
     state=normalizeState(recovery.state);
     const pendingActions=Array.isArray(recovery.pendingChanges)
       ? recovery.pendingChanges.map(x=>x?.action).filter(Boolean)
@@ -270,14 +278,23 @@ async function loadPersistedState() {
       action:'recovery-restore',
       metadata:{pendingActions,recoveredFrom:recovery.failedAt || null}
     });
-    if (saved) localStorage.removeItem(PENDING_RECOVERY_KEY);
+    if (!saved) throw new Error(storageError || 'Recovered Site state could not be saved.');
+    localStorage.removeItem(PENDING_RECOVERY_KEY);
     return;
   }
 
-  state=normalizeState(recovery.state);
-  storageConflict=true;
-  storageError='A browser recovery copy exists, but the Site has newer state. Export this recovered view if needed, then use “Reload Site state” to discard it.';
-  $('#saveStatus').textContent='Recovery conflict · browser copy loaded';
+  const browser = loadBrowserStateForMigration();
+  state = browser?.state || clone(seedState);
+  const saved = await saveState({
+    source:'system',
+    action:browser ? 'migrate-browser-state' : 'initialize-state',
+    metadata:{browserSource:browser?.source || null}
+  });
+  if (!saved) throw new Error(storageError || 'Initial Site state could not be saved.');
+  if (browser) {
+    localStorage.removeItem(STORAGE_KEY);
+    localStorage.removeItem(LEGACY_STORAGE_KEY);
+  }
 }
 
 function saveState(change={}) {
