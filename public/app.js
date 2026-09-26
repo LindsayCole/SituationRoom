@@ -509,6 +509,22 @@ function mergeYahooWaivers(yahooPlayers) {
   });
 }
 
+function scheduleDaysFromResponse(data) {
+  const out={};
+  for (const day of (data?.gameWeek || [])) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(day?.date || ''))) continue;
+    const teams=[];
+    for (const g of (day.games || [])) {
+      const away=(g.awayTeam?.abbrev||'').toUpperCase();
+      const home=(g.homeTeam?.abbrev||'').toUpperCase();
+      if (away) teams.push(away);
+      if (home) teams.push(home);
+    }
+    out[day.date]={games:(day.games||[]).length,teams:[...new Set(teams)]};
+  }
+  return out;
+}
+
 async function refreshSchedule() {
   const btn = $('#refreshScheduleBtn');
   btn.disabled = true;
@@ -516,22 +532,30 @@ async function refreshSchedule() {
   $('#scheduleStatus').textContent = 'NHL schedule: loading';
   try {
     const start = state.selectedDate || isoDate(new Date());
-    const data = await fetchJson(`/api/nhl/schedule?date=${encodeURIComponent(start)}`);
-    const schedule = {...state.schedule};
-    for (let i=0;i<7;i++) schedule[addDays(start,i)]={games:0,teams:[]};
-    for (const day of (data.gameWeek || [])) {
-      const teams=[];
-      for (const g of (day.games || [])) {
-        const away=(g.awayTeam?.abbrev||'').toUpperCase();
-        const home=(g.homeTeam?.abbrev||'').toUpperCase();
-        if (away) teams.push(away);
-        if (home) teams.push(home);
-      }
-      schedule[day.date] = { games:(day.games||[]).length, teams:[...new Set(teams)] };
+    const required=Array.from({length:7},(_,i)=>addDays(start,i));
+    const first=await fetchJson(`/api/nhl/schedule?date=${encodeURIComponent(start)}`);
+    const fetched=scheduleDaysFromResponse(first);
+
+    let missing=required.filter(date=>!Object.prototype.hasOwnProperty.call(fetched,date));
+    for (const date of missing) {
+      const extra=await fetchJson(`/api/nhl/schedule?date=${encodeURIComponent(date)}`);
+      Object.assign(fetched,scheduleDaysFromResponse(extra));
     }
+
+    missing=required.filter(date=>!Object.prototype.hasOwnProperty.call(fetched,date));
+    if (missing.length) {
+      throw new Error(`NHL schedule response did not confirm these dates: ${missing.join(', ')}. Existing stored schedule was left unchanged.`);
+    }
+
+    const schedule={...state.schedule};
+    for (const date of required) schedule[date]=fetched[date];
     state.schedule = schedule;
     state.scheduleFetchedAt = new Date().toISOString();
-    const saved=await saveState({source:'nhl',action:'schedule-refresh',metadata:{selectedDate:state.selectedDate,days:Object.keys(state.schedule).length}});
+    const saved=await saveState({
+      source:'nhl',
+      action:'schedule-refresh',
+      metadata:{selectedDate:start,dates:required}
+    });
     renderAll();
     if (!saved) alert('The NHL schedule loaded into the recovery copy, but could not be saved to Site storage. Use History / Storage to retry.');
   } catch (err) {
