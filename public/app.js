@@ -531,8 +531,9 @@ async function refreshSchedule() {
     }
     state.schedule = schedule;
     state.scheduleFetchedAt = new Date().toISOString();
-    saveState({source:'nhl',action:'schedule-refresh',metadata:{selectedDate:state.selectedDate,days:Object.keys(state.schedule).length}});
+    const saved=await saveState({source:'nhl',action:'schedule-refresh',metadata:{selectedDate:state.selectedDate,days:Object.keys(state.schedule).length}});
     renderAll();
+    if (!saved) alert('The NHL schedule loaded into the recovery copy, but could not be saved to Site storage. Use History / Storage to retry.');
   } catch (err) {
     $('#scheduleStatus').textContent = 'NHL schedule: refresh failed';
     alert(`Could not load the NHL schedule. Saved data was not changed.\n\n${err.message}`);
@@ -649,9 +650,7 @@ function renderYahooStatus() {
   if (searchBtn) searchBtn.disabled=!yahooSearchReady;
   if (searchInput) searchInput.disabled=!yahooSearchReady;
   if (positionInput) positionInput.disabled=!yahooSearchReady;
-  $('#waiverPoolSummary').textContent = state.waivers.length
-    ? `${state.waivers.length} available players in stored Yahoo/manual pool`
-    : 'No Yahoo player pool loaded yet';
+
 }
 
 async function syncYahoo() {
@@ -691,7 +690,8 @@ async function syncYahoo() {
     state.yahoo.rosterDate = rosterDate;
     state.yahoo.availableCount = state.waivers.length;
     state.yahoo.rosterSource = 'Yahoo Fantasy';
-    saveState({source:'yahoo',action:'yahoo-sync',metadata:{rosterCount:state.roster.length,availableCount:state.waivers.length,rosterDate}});
+    const saved=await saveState({source:'yahoo',action:'yahoo-sync',metadata:{rosterCount:state.roster.length,availableCount:state.waivers.length,rosterDate}});
+    if (!saved) throw new Error(storageError || 'Yahoo data loaded but could not be persisted.');
     renderAll();
     log.className = 'action-banner good';
     const rosterPoints = state.roster.filter(p=>p.yahooSeasonPoints !== null).length;
@@ -738,7 +738,8 @@ async function searchYahooPlayers() {
     for (const p of incoming) byKey.set(p.yahooPlayerKey,p);
     state.waivers = [...manual, ...byKey.values()];
     state.yahoo.availableCount = state.waivers.length;
-    saveState({source:'yahoo',action:'yahoo-player-search',metadata:{query,position,matched:incoming.length}});
+    const saved=await saveState({source:'yahoo',action:'yahoo-player-search',metadata:{query,position,matched:incoming.length}});
+    if (!saved) throw new Error(storageError || 'Yahoo search results could not be persisted.');
     renderAll();
     $('#yahooSyncLog').className = 'action-banner good';
     $('#yahooSyncLog').textContent = incoming.length
@@ -1051,7 +1052,7 @@ $('#yahooPlayerSearch').addEventListener('keydown',e=>{if(e.key==='Enter')search
 $('#waiverFilterInput').addEventListener('input',renderWaivers);
 $('#waiverPositionFilter').addEventListener('change',renderWaivers);
 $('#refreshHistoryBtn').addEventListener('click',loadHistory);
-$('#retryStorageBtn').addEventListener('click',()=>{storageError='';storageConflict=false;drainSaveQueue();renderPersistenceStatus();});
+$('#retryStorageBtn').addEventListener('click',()=>{if(!pendingSaves.length){location.reload();return;}storageError='';storageConflict=false;drainSaveQueue();renderPersistenceStatus();});
 $('#reloadSiteStateBtn').addEventListener('click',()=>{if(!confirm('Discard the browser recovery copy and reload the authoritative Site state? Export JSON first if you need to preserve the recovered view.'))return;localStorage.removeItem(PENDING_RECOVERY_KEY);location.reload();});
 $('#disconnectYahooBtn').addEventListener('click',async()=>{if(!yahooStatus.connected)return;if(!confirm('Disconnect Yahoo from this Situation Room Site?'))return;await fetchJson('/api/yahoo/disconnect',{method:'POST'});state.yahoo={...clone(seedState.yahoo)};saveState({source:'yahoo',action:'yahoo-disconnect'});await loadYahooStatus();renderAll();});
 $('#importWaiversBtn').addEventListener('click',()=>{const players=parsePlayerLines($('#waiverImport').value);if(!players.length){alert('No valid waiver lines found.');return;}state.waivers=players;saveState({source:'manual',action:'waiver-import',metadata:{count:players.length}});renderAll();});
@@ -1062,7 +1063,7 @@ $('#movesUsedInput').addEventListener('change',e=>{const before=state.movesThisW
 $('#copyBriefBtn').addEventListener('click',async()=>{try{await navigator.clipboard.writeText(buildBrief());$('#copyStatus').textContent='Situation Brief copied. Paste it into our ChatGPT conversation.';}catch{const ta=document.createElement('textarea');ta.value=buildBrief();document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove();$('#copyStatus').textContent='Situation Brief copied.';}});
 $('#exportBtn').addEventListener('click',exportState);
 $('#importFile').addEventListener('change',e=>{const f=e.target.files?.[0];if(f)importBackup(f);e.target.value='';});
-$('#resetBtn').addEventListener('click',()=>{if(confirm('Reset the stored Situation Room data to the v2 seed? This will create a revision in history.')){const before=clone(state);localStorage.removeItem(STORAGE_KEY);localStorage.removeItem(LEGACY_STORAGE_KEY);state=clone(seedState);saveState({source:'manual',action:'state-reset',before,after:clone(state)});renderAll();}});
+$('#resetBtn').addEventListener('click',()=>{if(confirm('Reset the stored Situation Room data to an empty seed? This will create a revision in history.')){const beforeSummary={rosterCount:state.roster.length,waiverCount:state.waivers.length,scheduleDays:Object.keys(state.schedule||{}).length};localStorage.removeItem(STORAGE_KEY);localStorage.removeItem(LEGACY_STORAGE_KEY);state=clone(seedState);saveState({source:'manual',action:'state-reset',metadata:{before:beforeSummary,after:{rosterCount:0,waiverCount:0,scheduleDays:0}}});renderAll();}});
 
 try {
   await loadPersistedState();
