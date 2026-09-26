@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Dead Puck Society - Situation Room v2</title>
+<style>
+body{font-family:system-ui,sans-serif;background:#07131d;color:#eef6fb;margin:0;padding:32px}main{max-width:900px;margin:auto}.card{background:#0f1d2a;border:1px solid #22394b;border-radius:14px;padding:20px;margin:16px 0}.ok{color:#76d7a5}.warn{color:#f7b955}button,a.btn{background:#173248;color:white;border:1px solid #31546d;border-radius:9px;padding:10px 14px;text-decoration:none;display:inline-block;margin-right:8px;cursor:pointer}code{background:#09151f;padding:2px 5px;border-radius:4px}h1{margin-bottom:4px}p{line-height:1.5;color:#bdd0dc}
+</style>
+</head>
+<body><main>
+<p>DEAD PUCK SOCIETY / 2026-27 / V2</p><h1>Situation Room</h1>
+<p>This repository shell verifies the v2 backend and Yahoo connection. The full planner UI is being transferred separately because the connected GitHub transport cannot safely accept the large browser bundle in one write.</p>
+<div class="card"><h2>Server</h2><p id="health">Checking...</p></div>
+<div class="card"><h2>Yahoo Fantasy</h2><p id="yahoo">Checking...</p><a class="btn" href="/api/yahoo/login">Connect Yahoo</a><button id="refresh">Refresh status</button></div>
+<div class="card"><h2>Engine</h2><p>The tested lineup/waiver calculation engine is committed at <code>public/logic.js</code>. Server-side OAuth, token encryption and Yahoo read APIs are committed normally. No secrets are stored in GitHub.</p></div>
+</main>
+<script>
+async function refresh(){
+ try{const h=await fetch('/api/health').then(r=>r.json());document.querySelector('#health').innerHTML='<span class="ok">Online</span> - '+h.version}catch(e){document.querySelector('#health').innerHTML='<span class="warn">Server unavailable</span>'}
+ try{const y=await fetch('/api/yahoo/status').then(r=>r.json());document.querySelector('#yahoo').innerHTML=(y.connected?'<span class="ok">Connected</span>':'<span class="warn">Not connected</span>')+' | configured: '+y.configured+' | write enabled: '+y.writeEnabled}catch(e){}
+}
+document.querySelector('#refresh').onclick=refresh;refresh();
+</script></body></html>

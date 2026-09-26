@@ -1,0 +1,1 @@
+// v2 repository shell. Core calculation logic lives in ./logic.js.\n// The full browser bundle remains in the tested v2 artifact from the ChatGPT build session.\n
