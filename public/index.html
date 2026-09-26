@@ -75,18 +75,26 @@
       </section>
 
       <section class="panel tab-panel" id="panel-waivers">
-        <div class="panel-head"><div><div class="eyebrow">WAIVER COMMAND</div><h2>Net usable value, not shiny-object value</h2></div><div class="metric-note">Yahoo sync can populate available players; FPPG stays editable.</div></div>
+        <div class="panel-head"><div><div class="eyebrow">WAIVER COMMAND</div><h2>Net usable value, not shiny-object value</h2></div><div class="metric-note" id="waiverPoolSummary">No Yahoo player pool loaded yet</div></div>
+        <div class="player-search-bar">
+          <div class="search-field"><label>Search Yahoo available players<input id="yahooPlayerSearch" type="search" placeholder="e.g. Knies, Hutson, Woll" /></label></div>
+          <label>Position<select id="yahooPositionSearch"><option value="">All</option><option>C</option><option>LW</option><option>RW</option><option>D</option><option>G</option></select></label>
+          <button class="btn btn-primary" id="searchYahooPlayersBtn">Search Yahoo</button>
+          <div class="search-separator"></div>
+          <div class="search-field"><label>Filter loaded pool<input id="waiverFilterInput" type="search" placeholder="Player, team, FA, waivers…" /></label></div>
+          <label>Filter pos.<select id="waiverPositionFilter"><option value="">All</option><option>C</option><option>LW</option><option>RW</option><option>D</option><option>G</option></select></label>
+        </div>
         <div class="import-box">
           <div><h3>Manual candidate import</h3><p><code>Name | TEAM | C/LW/RW | FPPG</code></p></div>
           <textarea id="waiverImport" rows="4" placeholder="Player Name | BOS | C/RW | 4.15"></textarea>
           <div class="row-actions"><button class="btn btn-primary" id="importWaiversBtn">Import candidates</button><button class="btn" id="clearWaiversBtn">Clear pool</button></div>
         </div>
-        <div class="table-wrap"><table class="wide-table"><thead><tr><th>Rank</th><th>Player</th><th>Pos</th><th>FPPG</th><th>Yahoo pts</th><th>Games 7d</th><th>Light</th><th>Best drop</th><th>Net 7d gain</th><th></th></tr></thead><tbody id="waiverTable"></tbody></table></div>
+        <div class="table-wrap"><table class="wide-table"><thead><tr><th>Rank</th><th>Player</th><th>Pos</th><th>Status</th><th>Owned</th><th>Projection</th><th>Yahoo pts</th><th>Games 7d</th><th>Light</th><th>Best drop</th><th>Net 7d gain</th><th></th></tr></thead><tbody id="waiverTable"></tbody></table></div>
       </section>
 
       <section class="panel tab-panel" id="panel-roster">
         <div class="panel-head"><div><div class="eyebrow">ROSTER CONTROL</div><h2>My roster</h2></div><button class="btn" id="addRosterRowBtn">Add player</button></div>
-        <div class="table-wrap"><table class="wide-table"><thead><tr><th>Player</th><th>Team</th><th>Positions</th><th>Yahoo slot</th><th>Status</th><th>FPPG</th><th>Goalie start %</th><th>Core</th><th>Can drop</th><th></th></tr></thead><tbody id="rosterTable"></tbody></table></div>
+        <div class="table-wrap"><table class="wide-table"><thead><tr><th>Player</th><th>Team / elig.</th><th>Yahoo slot</th><th>Status</th><th>Projection</th><th>Yahoo pts</th><th>Owned</th><th>Goalie start %</th><th>Core</th><th>Can drop</th><th></th></tr></thead><tbody id="rosterTable"></tbody></table></div>
         <div class="import-box compact"><div><h3>Bulk roster import</h3><p><code>Name | TEAM | C/LW | FPPG</code>. Replaces the current local roster.</p></div><textarea id="rosterImport" rows="5"></textarea><button class="btn btn-primary" id="importRosterBtn">Replace roster</button></div>
       </section>
 
@@ -100,7 +108,7 @@
           </article>
           <article class="card">
             <h3>Sync scope</h3>
-            <ul class="clean-list"><li>Discover your 2026–27 NHL fantasy team</li><li>Replace local roster with Yahoo roster</li><li>Preserve IR / IR+ roster placement</li><li>Load up to 100 available players</li><li>Bring Yahoo season fantasy points into the waiver table</li></ul>
+            <ul class="clean-list"><li>Discover your 2026–27 NHL fantasy team</li><li>Sync today's authoritative Yahoo roster and roster slots</li><li>Preserve IR / IR+ placement, injury status and cant-cut flags</li><li>Load the top 100 available players by Yahoo season points</li><li>Bring season fantasy points and rostered percentage into the room</li><li>Search additional Yahoo available players on demand without enumerating the whole pool</li></ul>
           </article>
           <article class="card">
             <h3>Write access</h3>
@@ -110,11 +118,16 @@
           <article class="card">
             <h3>Last successful sync</h3>
             <p id="lastYahooSync">Never</p>
-            <dl class="kv-list"><div><dt>Team key</dt><dd id="teamKeyValue">—</dd></div><div><dt>League key</dt><dd id="leagueKeyValue">—</dd></div><div><dt>Roster source</dt><dd id="rosterSourceValue">Local</dd></div></dl>
+            <dl class="kv-list"><div><dt>Team key</dt><dd id="teamKeyValue">—</dd></div><div><dt>League key</dt><dd id="leagueKeyValue">—</dd></div><div><dt>Roster date</dt><dd id="rosterDateValue">—</dd></div><div><dt>Roster source</dt><dd id="rosterSourceValue">Local</dd></div></dl>
+          </article>
+          <article class="card">
+            <h3>OAuth configuration</h3>
+            <dl class="kv-list"><div><dt>Missing env vars</dt><dd id="yahooMissingConfig">Checking…</dd></div><div><dt>Redirect URI</dt><dd><code id="yahooRedirectUri">Checking…</code></dd></div></dl>
+            <div class="mini-note">The redirect URI shown here must exactly match the Yahoo Developer application callback.</div>
           </article>
         </div>
         <div class="action-banner" id="yahooSyncLog">Yahoo sync has not run yet.</div>
-        <p class="muted yahoo-attribution">Fantasy data provided by Yahoo Fantasy. Official Yahoo Fantasy branding should be added before any public deployment.</p>
+        <p class="muted yahoo-attribution"><a href="https://sports.yahoo.com/fantasy/" target="_blank" rel="noopener noreferrer">Fantasy data provided by Yahoo Fantasy</a>. Official Yahoo Fantasy logo/branding still needs to be added before any public deployment.</p>
       </section>
 
       <section class="panel tab-panel" id="panel-league">
