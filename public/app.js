@@ -71,7 +71,7 @@ const seedState = {
     lastSyncAt: null,
     rosterDate: null,
     availableCount: 0,
-    rosterSource: 'local'
+    rosterSource: 'Manual / stored'
   }
 };
 
@@ -1053,18 +1053,21 @@ function renderLeague() {
 function buildBrief() {
   const w=projectWeek(state.roster,state.schedule,state.selectedDate,league.activeSlots);
   const waiverRows=candidateAnalysisRows().slice(0,25);
+  const projectionsReady=rosterProjectionComplete();
+  const scheduleReady=hasScheduleWindow(state.schedule,state.selectedDate);
   const brief={
     purpose:'Analyze Dead Puck Society for daily lineup and waiver optimization. Maximize usable fantasy points, not raw roster value.',
     generatedAt:new Date().toISOString(),
-    dataSources:{roster:state.yahoo.rosterSource, yahooLastSync:state.yahoo.lastSyncAt, nhlScheduleFetchedAt:state.scheduleFetchedAt},
+    dataQuality:{scheduleWindowComplete:scheduleReady,rosterProjectionsComplete:projectionsReady,unknownProjectionMeans:null},
+    dataSources:{roster:state.yahoo.rosterSource,yahooLastSync:state.yahoo.lastSyncAt,nhlScheduleFetchedAt:state.scheduleFetchedAt},
     league:{yahooLeagueId:league.id,name:league.name,teams:league.teams,scoringType:league.scoringType,maxAddsPerWeek:league.maxAddsPerWeek,movesUsedThisWeek:state.movesThisWeek,waiverPriority:league.waiverPriority,waiverType:league.waiverType,lineupDeadline:league.lineupDeadline,activeSlots:league.activeSlots,skaterScoring:league.skaterScoring,goalieScoring:league.goalieScoring},
-    roster:state.roster.map(p=>({name:p.name,team:p.team,positions:p.positions,yahooSlot:p.selectedPosition,status:p.status,fppg:p.fppg,core:p.core,canDrop:p.canDrop,startProbability:isGoalie(p)?p.startProbability:1,yahooSeasonPoints:p.yahooSeasonPoints,percentOwned:p.percentOwned,projectionSource:p.projectionSource,source:p.source})),
-    next7Days:w.days.map(d=>({date:d.date,nhlGames:d.games,night:d.nightClass,rosterTeamGames:d.scheduled.map(p=>p.name),starters:d.starters.map(x=>({slot:league.activeSlots[x.slotIndex],player:x.player.name,availability:x.player.availability})),blocked:d.blocked.map(p=>p.name),goalieStartsUnconfirmed:d.goalieUnconfirmed.map(p=>p.name),projectedPoints:Number(d.points.toFixed(2))})),
-    summary:{expectedUsableStarts:Number(w.usableGames.toFixed(2)),scheduledRosterTeamGames:w.scheduledGames,projectedPoints:Number(w.points.toFixed(2)),blockedProjectedPoints:Number(w.leakage.toFixed(2))},
-    waiverCandidates:waiverRows.map(({candidate:c,analysis:a})=>({name:c.name,team:c.team,positions:c.positions,fppg:c.fppg,yahooSeasonPoints:c.yahooSeasonPoints,percentOwned:c.percentOwned,ownershipType:c.ownershipType,projectionSource:c.projectionSource,games7d:a.games,lightNights:a.light,bestDrop:Number.isFinite(a.delta)?(a.drop?.name||'Open slot'):'No legal drop',projectedNetGain:Number.isFinite(a.delta)?Number(a.delta.toFixed(2)):null,expectedStartsDelta:Number.isFinite(a.usableDelta)?Number(a.usableDelta.toFixed(2)):null})),
-    instructions:['Do not assume a player is available unless listed in waiverCandidates.','Do not recommend dropping a core player or a player with canDrop=false.','Account for the 5-add weekly limit.','Prefer moves that create additional usable starts on light nights.','Goalie team games are not counted as starts when startProbability is 0.','FPPG is an editable estimate, not a guaranteed result.']
+    roster:state.roster.map(p=>({name:p.name,team:p.team,positions:p.positions,yahooSlot:p.selectedPosition,status:p.status,fppg:hasProjection(p)?Number(p.fppg):null,core:p.core,canDrop:p.canDrop,startProbability:isGoalie(p)?p.startProbability:1,yahooSeasonPoints:p.yahooSeasonPoints,percentOwned:p.percentOwned,projectionSource:p.projectionSource,source:p.source})),
+    next7Days:w.days.map(d=>({date:d.date,nhlGames:Object.prototype.hasOwnProperty.call(state.schedule,d.date)?d.games:null,night:Object.prototype.hasOwnProperty.call(state.schedule,d.date)?d.nightClass:null,rosterTeamGames:d.scheduled.map(p=>p.name),starters:d.starters.map(x=>({slot:league.activeSlots[x.slotIndex],player:x.player.name,availability:x.player.availability,projectionKnown:hasProjection(x.player)})),blocked:d.blocked.map(p=>p.name),goalieStartsUnconfirmed:d.goalieUnconfirmed.map(p=>p.name),projectedPoints:projectionsReady&&scheduleReady?Number(d.points.toFixed(2)):null})),
+    summary:{expectedUsableStarts:scheduleReady?Number(w.usableGames.toFixed(2)):null,scheduledRosterTeamGames:scheduleReady?w.scheduledGames:null,projectedPoints:projectionsReady&&scheduleReady?Number(w.points.toFixed(2)):null,blockedProjectedPoints:projectionsReady&&scheduleReady?Number(w.leakage.toFixed(2)):null},
+    waiverCandidates:waiverRows.map(({candidate:c,analysis:a})=>({name:c.name,team:c.team,positions:c.positions,fppg:hasProjection(c)?Number(c.fppg):null,yahooSeasonPoints:c.yahooSeasonPoints,percentOwned:c.percentOwned,ownershipType:c.ownershipType,projectionSource:c.projectionSource,games7d:a.games,lightNights:a.light,bestDrop:Number.isFinite(a.delta)?(a.drop?.name||'Open slot'):null,projectedNetGain:Number.isFinite(a.delta)?Number(a.delta.toFixed(2)):null,expectedStartsDelta:Number.isFinite(a.usableDelta)?Number(a.usableDelta.toFixed(2)):null})),
+    instructions:['Treat null projections and null projected totals as unknown, not zero.','Do not assume a player is available unless listed in waiverCandidates.','Do not recommend dropping a core player or a player with canDrop=false.','Do not make add/drop value claims until rosterProjectionsComplete and scheduleWindowComplete are true.','Account for the 5-add weekly limit.','Prefer moves that create additional usable starts on light nights.','Goalie team games are not counted as starts when startProbability is 0.','FPPG is an editable estimate, not a guaranteed result.']
   };
-  return 'DEAD PUCK SOCIETY — SITUATION BRIEF V2\n\n'+JSON.stringify(brief,null,2);
+  return 'DEAD PUCK SOCIETY — SITUATION BRIEF V2.2.1\n\n'+JSON.stringify(brief,null,2);
 }
 
 function exportState() {
