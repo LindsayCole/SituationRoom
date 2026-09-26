@@ -3,6 +3,7 @@ import {
   ACTIVE_SLOTS,
   addDays,
   analyzeCandidate,
+  candidateScheduleMetrics,
   dayAvailability,
   gamesOn,
   isGoalie,
@@ -78,6 +79,8 @@ const seedState = {
     teamKey: null,
     leagueKey: null,
     lastSyncAt: null,
+    rosterDate: null,
+    availableCount: 0,
     rosterSource: 'local'
   }
 };
@@ -86,9 +89,34 @@ const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
 
 function clone(v) { return JSON.parse(JSON.stringify(v)); }
+function nullableNumber(v) {
+  if (v === null || v === undefined || v === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
 function esc(s) { return String(s ?? '').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c])); }
 function fmtDate(dateStr) { return new Date(`${dateStr}T12:00:00`).toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'}); }
 function fmtWhen(value) { return value ? new Date(value).toLocaleString() : 'Never'; }
+function hasProjection(p) { return p?.projectionSource && p.projectionSource !== 'unset' && Number.isFinite(Number(p.fppg)); }
+function projectionLabel(p) {
+  if (!hasProjection(p)) return 'Projection needed';
+  return p.projectionSource === 'manual' ? 'Manual' : p.projectionSource;
+}
+function ownershipLabel(p) {
+  const raw = String(p?.ownershipType || '').toLowerCase();
+  if (raw.includes('waiver')) return 'Waivers';
+  if (raw.includes('free')) return 'Free agent';
+  return p?.ownershipType || 'Available';
+}
+function playerAvatar(p) {
+  return p?.imageUrl
+    ? `<img class="player-avatar" src="${esc(p.imageUrl)}" alt="" loading="lazy" referrerpolicy="no-referrer" />`
+    : '<span class="player-avatar player-avatar-placeholder">🏒</span>';
+}
+function statusBadge(p) {
+  const status = String(p?.status || '').trim().toUpperCase();
+  return status ? `<span class="badge status-badge">${esc(status)}</span>` : '<span class="mini-note">Active</span>';
+}
 
 function normalizeLoadedPlayer(p) {
   const positions = parsePositions((p.positions || []).join ? p.positions.join('/') : p.positions);
@@ -105,8 +133,13 @@ function normalizeLoadedPlayer(p) {
     status: String(p.status || ''),
     source: p.source || 'local',
     yahooPlayerKey: p.yahooPlayerKey || null,
-    yahooSeasonPoints: Number.isFinite(Number(p.yahooSeasonPoints)) ? Number(p.yahooSeasonPoints) : null,
+    yahooSeasonPoints: nullableNumber(p.yahooSeasonPoints),
     ownershipType: p.ownershipType || null,
+    percentOwned: nullableNumber(p.percentOwned),
+    waiverDate: p.waiverDate || null,
+    imageUrl: p.imageUrl || null,
+    projectionSource: p.projectionSource || (p.source === 'manual' ? 'manual' : 'unset'),
+    projectionUpdatedAt: p.projectionUpdatedAt || null,
     startProbability: goalie ? Math.max(0,Math.min(1,Number(p.startProbability)||0)) : 1,
     goalieStartProbabilities: p.goalieStartProbabilities || {}
   };
@@ -214,7 +247,9 @@ function parseYahooPlayers(doc, source='yahoo') {
     const seasonPoints = seasonPointsRaw === '' ? null : Number(seasonPointsRaw);
     const ownershipEl = directChild(el,'ownership');
     const percentEl = directChild(el,'percent_owned');
-    const percentValue = percentEl ? Number(directText(percentEl,'value')) : null;
+    const percentValue = percentEl ? nullableNumber(directText(percentEl,'value')) : null;
+    const imageUrl = directText(el,'image_url') || nestedText(el,'headshot','url') || null;
+    const waiverDate = ownershipEl ? (directText(ownershipEl,'waiver_date') || null) : null;
     players.push({
       id: makeUuid(),
       yahooPlayerKey: playerKey,
@@ -229,7 +264,11 @@ function parseYahooPlayers(doc, source='yahoo') {
       source,
       yahooSeasonPoints: Number.isFinite(seasonPoints) ? seasonPoints : null,
       ownershipType: ownershipEl ? directText(ownershipEl,'ownership_type') : null,
-      percentOwned: Number.isFinite(percentValue) ? percentValue : null,
+      percentOwned: percentValue,
+      waiverDate,
+      imageUrl,
+      projectionSource:'unset',
+      projectionUpdatedAt:null,
       startProbability: positions.includes('G') ? 0 : 1,
       goalieStartProbabilities: {}
     });
@@ -246,6 +285,8 @@ function mergeYahooRoster(yahooPlayers) {
       ...p,
       id: old?.id || p.id,
       fppg: Number(old?.fppg) || 0,
+      projectionSource: old?.projectionSource || 'unset',
+      projectionUpdatedAt: old?.projectionUpdatedAt || null,
       core: old?.core || false,
       canDrop: p.canDrop && (old ? old.canDrop !== false : true),
       startProbability: isGoalie(p) ? (Number(old?.startProbability)||0) : 1,
@@ -263,6 +304,8 @@ function mergeYahooWaivers(yahooPlayers) {
       ...p,
       id: old?.id || p.id,
       fppg: Number(old?.fppg) || 0,
+      projectionSource: old?.projectionSource || 'unset',
+      projectionUpdatedAt: old?.projectionUpdatedAt || null,
       core:false,
       canDrop:true,
       startProbability: isGoalie(p) ? (Number(old?.startProbability)||0) : 1,
@@ -327,7 +370,8 @@ function renderYahooStatus() {
     panel.className = 'status-pill status-warn';
     connect.hidden = false; sync.hidden = true; disconnect.hidden = true; headerSync.hidden = true;
     connect.disabled = true;
-    text.textContent = 'Server-side Yahoo credentials are not configured yet. Copy .env.example to .env and add your Yahoo Developer credentials.';
+    const missing = yahooStatus.missingConfig?.length ? ` Missing: ${yahooStatus.missingConfig.join(', ')}.` : '';
+    text.textContent = 'Server-side Yahoo credentials are not configured yet.' + missing;
   } else if (!yahooStatus.connected) {
     header.textContent = 'Yahoo: disconnected';
     panel.textContent = 'Disconnected';
@@ -349,6 +393,12 @@ function renderYahooStatus() {
   $('#teamKeyValue').textContent = state.yahoo.teamKey || '—';
   $('#leagueKeyValue').textContent = state.yahoo.leagueKey || '—';
   $('#rosterSourceValue').textContent = state.yahoo.rosterSource || 'local';
+  $('#rosterDateValue').textContent = state.yahoo.rosterDate || '—';
+  $('#yahooRedirectUri').textContent = yahooStatus.redirectUri || 'Set YAHOO_REDIRECT_URI in .env';
+  $('#yahooMissingConfig').textContent = yahooStatus.missingConfig?.length ? yahooStatus.missingConfig.join(', ') : 'None';
+  $('#yahooPoolSummary').textContent = state.waivers.length
+    ? `${state.waivers.length} available players in local pool`
+    : 'No Yahoo player pool loaded yet';
 }
 
 async function syncYahoo() {
@@ -368,8 +418,9 @@ async function syncYahoo() {
     state.yahoo.teamKey = team.teamKey;
     state.yahoo.leagueKey = leagueKey;
 
-    log.textContent = 'Syncing roster…';
-    const rosterDoc = await fetchXml(`/api/yahoo/roster?teamKey=${encodeURIComponent(team.teamKey)}&date=${encodeURIComponent(state.selectedDate)}`);
+    const rosterDate = isoDate(new Date());
+    log.textContent = `Syncing current roster for ${rosterDate}…`;
+    const rosterDoc = await fetchXml(`/api/yahoo/roster?teamKey=${encodeURIComponent(team.teamKey)}&date=${encodeURIComponent(rosterDate)}`);
     const rosterPlayers = parseYahooPlayers(rosterDoc,'yahoo-roster');
     if (!rosterPlayers.length) throw new Error('Yahoo roster response contained no players.');
     state.roster = mergeYahooRoster(rosterPlayers);
@@ -384,17 +435,67 @@ async function syncYahoo() {
     state.waivers = mergeYahooWaivers(available.filter(p=>p.yahooPlayerKey && !seen.has(p.yahooPlayerKey) && seen.add(p.yahooPlayerKey)));
 
     state.yahoo.lastSyncAt = new Date().toISOString();
+    state.yahoo.rosterDate = rosterDate;
+    state.yahoo.availableCount = state.waivers.length;
     state.yahoo.rosterSource = 'Yahoo Fantasy';
     saveState();
     renderAll();
     log.className = 'action-banner good';
-    log.textContent = `Yahoo sync complete: ${state.roster.length} roster players and ${state.waivers.length} available players loaded.`;
+    const rosterPoints = state.roster.filter(p=>p.yahooSeasonPoints !== null).length;
+    const poolPoints = state.waivers.filter(p=>p.yahooSeasonPoints !== null).length;
+    log.textContent = `Yahoo sync complete: ${state.roster.length} roster players (${rosterPoints} with Yahoo points) and ${state.waivers.length} available players (${poolPoints} with Yahoo points).`;
   } catch (err) {
     log.className = 'action-banner warn';
     log.textContent = `Yahoo sync failed: ${err.message}`;
     if (/not connected|401/i.test(err.message)) await loadYahooStatus();
   } finally {
     buttons.forEach((b,i)=>{b.disabled=false;b.textContent=i===0?'Sync now':'Sync Yahoo';});
+  }
+}
+
+
+async function searchYahooPlayers() {
+  if (!yahooStatus.connected || !state.yahoo.leagueKey) {
+    alert('Connect and sync Yahoo first so the league key is known.');
+    return;
+  }
+  const input = $('#yahooPlayerSearch');
+  const query = input.value.trim();
+  if (query.length < 2) {
+    alert('Enter at least two characters of a player name.');
+    return;
+  }
+  const position = $('#yahooPositionSearch').value;
+  const btn = $('#searchYahooPlayersBtn');
+  btn.disabled = true;
+  btn.textContent = 'Searching…';
+  try {
+    const params = new URLSearchParams({
+      leagueKey:state.yahoo.leagueKey,
+      status:'A',
+      start:'0',
+      count:'25',
+      search:query
+    });
+    if (position) params.set('position',position);
+    const doc = await fetchXml('/api/yahoo/available?' + params.toString());
+    const incoming = mergeYahooWaivers(parseYahooPlayers(doc,'yahoo-search'));
+    const byKey = new Map(state.waivers.filter(p=>p.yahooPlayerKey).map(p=>[p.yahooPlayerKey,p]));
+    for (const p of incoming) byKey.set(p.yahooPlayerKey,p);
+    state.waivers = [...byKey.values()];
+    state.yahoo.availableCount = state.waivers.length;
+    saveState();
+    renderAll();
+    $('#yahooSyncLog').className = 'action-banner good';
+    $('#yahooSyncLog').textContent = incoming.length
+      ? `Yahoo search added/refreshed ${incoming.length} matching available player${incoming.length===1?'':'s'}.`
+      : `Yahoo returned no available players matching “${query}”.`;
+  } catch (err) {
+    $('#yahooSyncLog').className = 'action-banner warn';
+    $('#yahooSyncLog').textContent = `Yahoo player search failed: ${err.message}`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Search Yahoo';
   }
 }
 
@@ -482,35 +583,69 @@ function renderWeek() {
 }
 
 function candidateAnalysisRows() {
-  return state.waivers.map(c=>({candidate:c,analysis:analyzeCandidate(c,state,league.activeSlots)}))
-    .sort((a,b)=>{
-      const ad=Number.isFinite(a.analysis.delta)?a.analysis.delta:-1e12;
-      const bd=Number.isFinite(b.analysis.delta)?b.analysis.delta:-1e12;
-      return bd-ad || b.analysis.light-a.analysis.light;
-    });
+  return state.waivers.map(c=>{
+    const analysis = hasProjection(c)
+      ? analyzeCandidate(c,state,league.activeSlots)
+      : {...candidateScheduleMetrics(c,state.schedule,state.selectedDate),delta:Number.NaN,usableDelta:Number.NaN,drop:null,projectionMissing:true};
+    return {candidate:c,analysis};
+  }).sort((a,b)=>{
+    const aReady=hasProjection(a.candidate), bReady=hasProjection(b.candidate);
+    if (aReady !== bReady) return bReady-aReady;
+    const ad=Number.isFinite(a.analysis.delta)?a.analysis.delta:-1e12;
+    const bd=Number.isFinite(b.analysis.delta)?b.analysis.delta:-1e12;
+    return bd-ad
+      || (nullableNumber(b.candidate.yahooSeasonPoints) ?? -1e12) - (nullableNumber(a.candidate.yahooSeasonPoints) ?? -1e12)
+      || b.analysis.light-a.analysis.light;
+  });
 }
 
 function renderWaivers() {
   const body=$('#waiverTable');
   body.innerHTML='';
-  if (!state.waivers.length) {
-    body.innerHTML='<tr><td colspan="10" class="muted">No waiver candidates loaded yet.</td></tr>';
+  const filter=String($('#waiverFilterInput')?.value || '').trim().toLowerCase();
+  const posFilter=$('#waiverPositionFilter')?.value || '';
+  const rows=candidateAnalysisRows().filter(({candidate:c})=>{
+    const text=`${c.name} ${c.team} ${(c.positions||[]).join(' ')} ${ownershipLabel(c)}`.toLowerCase();
+    return (!filter || text.includes(filter)) && (!posFilter || (c.positions||[]).includes(posFilter));
+  });
+  $('#waiverPoolSummary').textContent = state.waivers.length
+    ? `${rows.length} shown · ${state.waivers.length} in local Yahoo/manual pool`
+    : 'No Yahoo player pool loaded yet';
+  if (!rows.length) {
+    body.innerHTML='<tr><td colspan="12" class="muted">No waiver candidates match the current pool/filter.</td></tr>';
     return;
   }
   const scheduleReady=Boolean(state.scheduleFetchedAt);
-  candidateAnalysisRows().forEach((x,i)=>{
+  rows.forEach((x,i)=>{
     const c=x.candidate,a=x.analysis;
-    const actionable=Number.isFinite(a.delta);
+    const projectionReady=hasProjection(c);
+    const actionable=projectionReady && Number.isFinite(a.delta);
     const deltaText=scheduleReady && actionable ? `${a.delta>=0?'+':''}${a.delta.toFixed(1)}` : '—';
     const gainCls=actionable && a.delta>=0?'gain-pos':'gain-neg';
     const buttonDisabled=!scheduleReady || !actionable || state.movesThisWeek>=league.maxAddsPerWeek;
-    const buttonLabel=state.movesThisWeek>=league.maxAddsPerWeek?'Weekly limit reached':'Stage locally';
-    body.insertAdjacentHTML('beforeend',`<tr><td><span class="rank-badge">${i+1}</span></td><td><strong>${esc(c.name)}</strong><div class="mini-note ${c.source?.startsWith('yahoo')?'source-yahoo':'source-manual'}">${esc(c.team)} · ${esc(c.ownershipType||c.source||'local')}</div></td><td>${esc((c.positions||[]).join('/'))}</td><td><input class="w-fppg input-small" data-id="${esc(c.id)}" type="number" step="0.01" min="-20" max="30" value="${Number(c.fppg)||0}" /></td><td>${c.yahooSeasonPoints==null?'—':Number(c.yahooSeasonPoints).toFixed(1)}</td><td>${a.games}</td><td>${a.light}</td><td>${!actionable?'No legal drop':a.drop?esc(a.drop.name):'<span class="gain-pos">Open slot</span>'}</td><td class="${gainCls}">${deltaText}${scheduleReady && actionable?` <span class="mini-note">(${a.usableDelta>=0?'+':''}${a.usableDelta.toFixed(1)} starts)</span>`:''}</td><td><button class="btn small-btn stage-waiver" data-id="${esc(c.id)}" ${buttonDisabled?'disabled':''}>${buttonLabel}</button></td></tr>`);
+    const buttonLabel=!projectionReady?'Set projection':state.movesThisWeek>=league.maxAddsPerWeek?'Weekly limit reached':'Stage locally';
+    const owned=c.percentOwned==null?'—':`${c.percentOwned.toFixed(0)}%`;
+    body.insertAdjacentHTML('beforeend',`<tr>
+      <td><span class="rank-badge">${i+1}</span></td>
+      <td><div class="player-cell">${playerAvatar(c)}<div><strong>${esc(c.name)}</strong><div class="mini-note source-yahoo">${esc(c.team)} · ${esc(ownershipLabel(c))}</div></div></div></td>
+      <td>${esc((c.positions||[]).join('/'))}</td>
+      <td>${statusBadge(c)}</td>
+      <td>${owned}</td>
+      <td><input class="w-fppg input-small" data-id="${esc(c.id)}" type="number" step="0.01" min="-20" max="30" value="${Number(c.fppg)||0}" /><div class="mini-note">${esc(projectionLabel(c))}</div></td>
+      <td>${c.yahooSeasonPoints==null?'—':Number(c.yahooSeasonPoints).toFixed(1)}</td>
+      <td>${a.games}</td>
+      <td>${a.light}</td>
+      <td>${!projectionReady?'<span class="muted">Projection needed</span>':!actionable?'No legal drop':a.drop?esc(a.drop.name):'<span class="gain-pos">Open slot</span>'}</td>
+      <td class="${gainCls}">${deltaText}${scheduleReady && actionable?` <span class="mini-note">(${a.usableDelta>=0?'+':''}${a.usableDelta.toFixed(1)} starts)</span>`:''}</td>
+      <td><button class="btn small-btn stage-waiver" data-id="${esc(c.id)}" ${buttonDisabled?'disabled':''}>${buttonLabel}</button></td>
+    </tr>`);
   });
   body.querySelectorAll('.w-fppg').forEach(el=>el.addEventListener('change',e=>{
     const p=state.waivers.find(x=>x.id===e.target.dataset.id);
     if (!p) return;
     p.fppg=Number(e.target.value)||0;
+    p.projectionSource='manual';
+    p.projectionUpdatedAt=new Date().toISOString();
     saveState();renderAll();
   }));
   body.querySelectorAll('.stage-waiver').forEach(btn=>btn.addEventListener('click',()=>stageCandidate(btn.dataset.id)));
@@ -527,6 +662,10 @@ function stageCandidate(id) {
   }
   const c=state.waivers.find(x=>x.id===id);
   if (!c) return;
+  if (!hasProjection(c)) {
+    alert('Set an FPPG projection for this player before staging an add/drop.');
+    return;
+  }
   const a=analyzeCandidate(c,state,league.activeSlots);
   if (!Number.isFinite(a.delta)) {
     alert('There is no legal local roster path for this player without dropping a protected/reserve player.');
@@ -546,7 +685,22 @@ function renderRoster() {
   body.innerHTML='';
   state.roster.forEach(p=>{
     const goalie=isGoalie(p);
-    body.insertAdjacentHTML('beforeend',`<tr data-id="${esc(p.id)}"><td><input class="r-name" value="${esc(p.name)}" /></td><td><input class="r-team" value="${esc(p.team)}" maxlength="4" /></td><td><input class="r-pos" value="${esc((p.positions||[]).join('/'))}" /></td><td><input class="r-selected" value="${esc(p.selectedPosition||'BN')}" /></td><td><input class="r-status" value="${esc(p.status||'')}" /></td><td><input class="r-fppg" type="number" step="0.01" min="-20" max="30" value="${Number(p.fppg)||0}" /></td><td>${goalie?`<input class="r-start input-small" type="number" step="5" min="0" max="100" value="${Math.round((Number(p.startProbability)||0)*100)}" />`:'<span class="mini-note">100%</span>'}</td><td class="checkbox-cell"><input class="r-core" type="checkbox" ${p.core?'checked':''} /></td><td class="checkbox-cell"><input class="r-drop" type="checkbox" ${p.canDrop!==false?'checked':''} ${p.core?'disabled':''} /></td><td><button class="btn small-btn remove-roster">Remove</button><div class="mini-note">${esc(p.source||'local')}</div></td></tr>`);
+    const yahoo=String(p.source||'').startsWith('yahoo');
+    const locked=yahoo?'readonly':'';
+    const owned=p.percentOwned==null?'—':`${p.percentOwned.toFixed(0)}%`;
+    body.insertAdjacentHTML('beforeend',`<tr data-id="${esc(p.id)}">
+      <td><div class="player-cell">${playerAvatar(p)}<div><input class="r-name" ${locked} value="${esc(p.name)}" /><div class="mini-note">${esc(p.source||'local')}</div></div></div></td>
+      <td><input class="r-team input-tiny" ${locked} value="${esc(p.team)}" maxlength="4" /><div class="mini-note">${esc((p.positions||[]).join('/'))}</div><input class="r-pos visually-hidden" ${locked} value="${esc((p.positions||[]).join('/'))}" /></td>
+      <td><input class="r-selected input-tiny" ${locked} value="${esc(p.selectedPosition||'BN')}" /></td>
+      <td><input class="r-status input-tiny" ${locked} value="${esc(p.status||'')}" placeholder="Active" /></td>
+      <td><input class="r-fppg input-small" type="number" step="0.01" min="-20" max="30" value="${Number(p.fppg)||0}" /><div class="mini-note">${esc(projectionLabel(p))}</div></td>
+      <td>${p.yahooSeasonPoints==null?'—':Number(p.yahooSeasonPoints).toFixed(1)}</td>
+      <td>${owned}</td>
+      <td>${goalie?`<input class="r-start input-small" type="number" step="5" min="0" max="100" value="${Math.round((Number(p.startProbability)||0)*100)}" />`:'<span class="mini-note">n/a</span>'}</td>
+      <td class="checkbox-cell"><input class="r-core" type="checkbox" ${p.core?'checked':''} /></td>
+      <td class="checkbox-cell"><input class="r-drop" type="checkbox" ${p.canDrop!==false?'checked':''} ${p.core?'disabled':''} /></td>
+      <td><button class="btn small-btn remove-roster">Remove local</button></td>
+    </tr>`);
   });
   body.querySelectorAll('input').forEach(el=>el.addEventListener('change',handleRosterEdit));
   body.querySelectorAll('.remove-roster').forEach(btn=>btn.addEventListener('click',e=>{
@@ -568,6 +722,10 @@ function handleRosterEdit(e) {
   p.selectedPosition=tr.querySelector('.r-selected').value.trim().toUpperCase() || 'BN';
   p.status=tr.querySelector('.r-status').value.trim().toUpperCase();
   p.fppg=Number(tr.querySelector('.r-fppg').value)||0;
+  if (e.target.classList.contains('r-fppg')) {
+    p.projectionSource='manual';
+    p.projectionUpdatedAt=new Date().toISOString();
+  }
   p.core=tr.querySelector('.r-core').checked;
   p.canDrop=p.core?false:tr.querySelector('.r-drop').checked;
   p.startProbability=isGoalie(p)?Math.max(0,Math.min(1,(Number(tr.querySelector('.r-start')?.value)||0)/100)):1;
@@ -590,10 +748,10 @@ function buildBrief() {
     generatedAt:new Date().toISOString(),
     dataSources:{roster:state.yahoo.rosterSource, yahooLastSync:state.yahoo.lastSyncAt, nhlScheduleFetchedAt:state.scheduleFetchedAt},
     league:{yahooLeagueId:league.id,name:league.name,teams:league.teams,scoringType:league.scoringType,maxAddsPerWeek:league.maxAddsPerWeek,movesUsedThisWeek:state.movesThisWeek,waiverPriority:league.waiverPriority,waiverType:league.waiverType,lineupDeadline:league.lineupDeadline,activeSlots:league.activeSlots,skaterScoring:league.skaterScoring,goalieScoring:league.goalieScoring},
-    roster:state.roster.map(p=>({name:p.name,team:p.team,positions:p.positions,yahooSlot:p.selectedPosition,status:p.status,fppg:p.fppg,core:p.core,canDrop:p.canDrop,startProbability:isGoalie(p)?p.startProbability:1,yahooSeasonPoints:p.yahooSeasonPoints,source:p.source})),
+    roster:state.roster.map(p=>({name:p.name,team:p.team,positions:p.positions,yahooSlot:p.selectedPosition,status:p.status,fppg:p.fppg,core:p.core,canDrop:p.canDrop,startProbability:isGoalie(p)?p.startProbability:1,yahooSeasonPoints:p.yahooSeasonPoints,percentOwned:p.percentOwned,projectionSource:p.projectionSource,source:p.source})),
     next7Days:w.days.map(d=>({date:d.date,nhlGames:d.games,night:d.nightClass,rosterTeamGames:d.scheduled.map(p=>p.name),starters:d.starters.map(x=>({slot:league.activeSlots[x.slotIndex],player:x.player.name,availability:x.player.availability})),blocked:d.blocked.map(p=>p.name),goalieStartsUnconfirmed:d.goalieUnconfirmed.map(p=>p.name),projectedPoints:Number(d.points.toFixed(2))})),
     summary:{expectedUsableStarts:Number(w.usableGames.toFixed(2)),scheduledRosterTeamGames:w.scheduledGames,projectedPoints:Number(w.points.toFixed(2)),blockedProjectedPoints:Number(w.leakage.toFixed(2))},
-    waiverCandidates:waiverRows.map(({candidate:c,analysis:a})=>({name:c.name,team:c.team,positions:c.positions,fppg:c.fppg,yahooSeasonPoints:c.yahooSeasonPoints,ownershipType:c.ownershipType,games7d:a.games,lightNights:a.light,bestDrop:Number.isFinite(a.delta)?(a.drop?.name||'Open slot'):'No legal drop',projectedNetGain:Number.isFinite(a.delta)?Number(a.delta.toFixed(2)):null,expectedStartsDelta:Number.isFinite(a.usableDelta)?Number(a.usableDelta.toFixed(2)):null})),
+    waiverCandidates:waiverRows.map(({candidate:c,analysis:a})=>({name:c.name,team:c.team,positions:c.positions,fppg:c.fppg,yahooSeasonPoints:c.yahooSeasonPoints,percentOwned:c.percentOwned,ownershipType:c.ownershipType,projectionSource:c.projectionSource,games7d:a.games,lightNights:a.light,bestDrop:Number.isFinite(a.delta)?(a.drop?.name||'Open slot'):'No legal drop',projectedNetGain:Number.isFinite(a.delta)?Number(a.delta.toFixed(2)):null,expectedStartsDelta:Number.isFinite(a.usableDelta)?Number(a.usableDelta.toFixed(2)):null})),
     instructions:['Do not assume a player is available unless listed in waiverCandidates.','Do not recommend dropping a core player or a player with canDrop=false.','Account for the 5-add weekly limit.','Prefer moves that create additional usable starts on light nights.','Goalie team games are not counted as starts when startProbability is 0.','FPPG is an editable estimate, not a guaranteed result.']
   };
   return 'DEAD PUCK SOCIETY — SITUATION BRIEF V2\n\n'+JSON.stringify(brief,null,2);
@@ -632,6 +790,10 @@ $('#refreshScheduleBtn').addEventListener('click',refreshSchedule);
 $('#connectYahooBtn').addEventListener('click',()=>{window.location.href='/api/yahoo/login';});
 $('#syncYahooBtn').addEventListener('click',syncYahoo);
 $('#syncYahooHeaderBtn').addEventListener('click',syncYahoo);
+$('#searchYahooPlayersBtn').addEventListener('click',searchYahooPlayers);
+$('#yahooPlayerSearch').addEventListener('keydown',e=>{if(e.key==='Enter')searchYahooPlayers();});
+$('#waiverFilterInput').addEventListener('input',renderWaivers);
+$('#waiverPositionFilter').addEventListener('change',renderWaivers);
 $('#disconnectYahooBtn').addEventListener('click',async()=>{if(!confirm('Disconnect Yahoo from this local Situation Room server?'))return;await fetchJson('/api/yahoo/disconnect',{method:'POST'});state.yahoo={...clone(seedState.yahoo)};saveState();await loadYahooStatus();renderAll();});
 $('#importWaiversBtn').addEventListener('click',()=>{const players=parsePlayerLines($('#waiverImport').value);if(!players.length){alert('No valid waiver lines found.');return;}state.waivers=players;saveState();renderAll();});
 $('#clearWaiversBtn').addEventListener('click',()=>{if(confirm('Clear the local waiver candidate pool?')){state.waivers=[];saveState();renderAll();}});
