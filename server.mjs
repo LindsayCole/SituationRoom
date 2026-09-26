@@ -136,7 +136,7 @@ const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, APP_ORIGIN);
 
-    if (url.pathname === '/api/health') return json(res, 200, { ok: true, version: '2.0.0-alpha.1' });
+    if (url.pathname === '/api/health') return json(res, 200, { ok: true, version: '2.1.0-alpha.1' });
 
     if (url.pathname === '/api/nhl/schedule') {
       const date = url.searchParams.get('date');
