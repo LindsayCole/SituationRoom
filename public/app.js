@@ -19,6 +19,7 @@ import {
 
 const STORAGE_KEY = 'deadPuckSituationRoom_v2';
 const LEGACY_STORAGE_KEY = 'deadPuckSituationRoom_v1';
+const PENDING_RECOVERY_KEY = 'deadPuckSituationRoom_pendingRecovery';
 
 const league = {
   id: 46311,
@@ -156,33 +157,117 @@ function migrateLegacy(legacy) {
   return migrated;
 }
 
-function loadState() {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      return {
-        ...clone(seedState),
-        ...parsed,
-        roster: Array.isArray(parsed.roster) ? parsed.roster.map(normalizeLoadedPlayer) : clone(seedState.roster),
-        waivers: Array.isArray(parsed.waivers) ? parsed.waivers.map(normalizeLoadedPlayer) : [],
-        yahoo: {...clone(seedState.yahoo), ...(parsed.yahoo || {})}
-      };
-    }
-    const legacyRaw = localStorage.getItem(LEGACY_STORAGE_KEY);
-    if (legacyRaw) return migrateLegacy(JSON.parse(legacyRaw));
-  } catch (err) {
-    console.warn('Local state could not be loaded.', err);
-  }
-  return clone(seedState);
+function normalizeState(parsed) {
+  return {
+    ...clone(seedState),
+    ...(parsed || {}),
+    roster: Array.isArray(parsed?.roster) ? parsed.roster.map(normalizeLoadedPlayer) : clone(seedState.roster),
+    waivers: Array.isArray(parsed?.waivers) ? parsed.waivers.map(normalizeLoadedPlayer) : [],
+    yahoo: {...clone(seedState.yahoo), ...(parsed?.yahoo || {})}
+  };
 }
 
-let state = loadState();
+function loadBrowserStateForMigration() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) return { state:normalizeState(JSON.parse(raw)), source:'v2-browser' };
+    const legacyRaw = localStorage.getItem(LEGACY_STORAGE_KEY);
+    if (legacyRaw) return { state:migrateLegacy(JSON.parse(legacyRaw)), source:'v1-browser' };
+  } catch (err) {
+    console.warn('Legacy browser state could not be read.', err);
+  }
+  return null;
+}
+
+let state = clone(seedState);
+let stateRevision = 0;
+let stateUpdatedAt = null;
+let saveChain = Promise.resolve();
+let historyRows = [];
 let yahooStatus = { configured:false, connected:false, writeEnabled:false, readOnlyDefault:true };
 
-function saveState() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-  $('#saveStatus').textContent = 'Saved locally · ' + new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+async function loadPersistedState() {
+  $('#saveStatus').textContent = 'Loading Site storage…';
+  const stored = await fetchJson('/api/state');
+  if (stored.state) {
+    state = normalizeState(stored.state);
+    stateRevision = Number(stored.revision) || 0;
+    stateUpdatedAt = stored.updatedAt || null;
+    $('#saveStatus').textContent = `Saved to Site · rev ${stateRevision}`;
+    return;
+  }
+
+  const browser = loadBrowserStateForMigration();
+  state = browser?.state || clone(seedState);
+  await saveState({
+    source:'system',
+    action:browser ? 'migrate-browser-state' : 'initialize-state',
+    metadata:{browserSource:browser?.source || null}
+  });
+  if (browser) {
+    localStorage.removeItem(STORAGE_KEY);
+    localStorage.removeItem(LEGACY_STORAGE_KEY);
+  }
+}
+
+function saveState(change={}) {
+  const snapshot = clone(state);
+  const clientChangeId = makeUuid();
+  const normalizedChange = {
+    source:change.source || 'manual',
+    action:change.action || 'state-update',
+    entityType:change.entityType || null,
+    entityId:change.entityId || null,
+    before:change.before,
+    after:change.after,
+    metadata:change.metadata,
+    clientChangeId
+  };
+
+  $('#saveStatus').textContent = 'Saving to Site…';
+  saveChain = saveChain.catch(()=>{}).then(async()=>{
+    try {
+      const result = await fetchJson('/api/state',{
+        method:'PUT',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({
+          state:snapshot,
+          baseRevision:stateRevision,
+          change:normalizedChange
+        })
+      });
+      stateRevision = Number(result.revision) || stateRevision;
+      stateUpdatedAt = result.updatedAt || new Date().toISOString();
+      localStorage.removeItem(PENDING_RECOVERY_KEY);
+      $('#saveStatus').textContent = `Saved to Site · rev ${stateRevision}`;
+      historyRows.unshift({
+        id:result.changeId || clientChangeId,
+        revision:stateRevision,
+        source:normalizedChange.source,
+        action:normalizedChange.action,
+        entityType:normalizedChange.entityType,
+        entityId:normalizedChange.entityId,
+        metadata:normalizedChange.metadata || null,
+        createdAt:stateUpdatedAt
+      });
+      historyRows = historyRows.slice(0,100);
+      renderPersistenceStatus();
+      renderHistory();
+      return result;
+    } catch (err) {
+      localStorage.setItem(PENDING_RECOVERY_KEY,JSON.stringify({
+        state:snapshot,
+        change:normalizedChange,
+        failedAt:new Date().toISOString()
+      }));
+      $('#saveStatus').textContent = err.status===409
+        ? 'Save conflict · recovery copy kept in browser'
+        : 'Save failed · recovery copy kept in browser';
+      renderPersistenceStatus(err.message);
+      throw err;
+    }
+  });
+  return saveChain;
 }
 
 async function fetchJson(url, options) {
@@ -190,7 +275,12 @@ async function fetchJson(url, options) {
   const text = await res.text();
   let data;
   try { data = JSON.parse(text); } catch { data = { error:text || `HTTP ${res.status}` }; }
-  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  if (!res.ok) {
+    const err = new Error(data.error || `HTTP ${res.status}`);
+    err.status = res.status;
+    err.data = data;
+    throw err;
+  }
   return data;
 }
 
@@ -346,6 +436,51 @@ async function refreshSchedule() {
   }
 }
 
+async function loadHistory() {
+  try {
+    const data = await fetchJson('/api/changes?limit=100');
+    historyRows = Array.isArray(data.changes) ? data.changes : [];
+  } catch (err) {
+    console.warn('Change history could not be loaded.',err);
+  }
+  renderHistory();
+}
+
+function renderPersistenceStatus(errorText='') {
+  const pill=$('#siteStorageStatus');
+  const status=$('#storageStatusText');
+  const rev=$('#storageRevision');
+  const updated=$('#storageUpdatedAt');
+  if (!pill || !status || !rev || !updated) return;
+
+  if (errorText) {
+    pill.textContent='Site storage: attention';
+    pill.className='status-pill status-warn';
+    status.textContent=errorText;
+  } else {
+    pill.textContent=`Site storage: saved · r${stateRevision}`;
+    pill.className='status-pill good';
+    status.textContent='D1 is the authoritative store. Browser storage is used only as emergency recovery for a failed save.';
+  }
+  rev.textContent=String(stateRevision);
+  updated.textContent=fmtWhen(stateUpdatedAt);
+}
+
+function renderHistory() {
+  const body=$('#historyTable');
+  if (!body) return;
+  body.innerHTML='';
+  if (!historyRows.length) {
+    body.innerHTML='<tr><td colspan="5" class="muted">No stored changes yet.</td></tr>';
+    return;
+  }
+  for (const row of historyRows) {
+    const detail=[row.entityType,row.entityId].filter(Boolean).join(' · ')
+      || (row.metadata ? JSON.stringify(row.metadata).slice(0,120) : '—');
+    body.insertAdjacentHTML('beforeend',`<tr><td>r${Number(row.revision)||0}</td><td>${esc(fmtWhen(row.createdAt))}</td><td>${esc(row.source||'manual')}</td><td><strong>${esc(row.action||'state-update')}</strong></td><td class="mini-note">${esc(detail)}</td></tr>`);
+  }
+}
+
 async function loadYahooStatus() {
   try {
     yahooStatus = await fetchJson('/api/yahoo/status');
@@ -371,7 +506,7 @@ function renderYahooStatus() {
     connect.hidden = false; sync.hidden = true; disconnect.hidden = true; headerSync.hidden = true;
     connect.disabled = true;
     const missing = yahooStatus.missingConfig?.length ? ` Missing: ${yahooStatus.missingConfig.join(', ')}.` : '';
-    text.textContent = 'Server-side Yahoo credentials are not configured yet.' + missing;
+    text.textContent = yahooStatus.message || ('Yahoo credentials are not configured yet.' + missing);
   } else if (!yahooStatus.connected) {
     header.textContent = 'Yahoo: disconnected';
     panel.textContent = 'Disconnected';
@@ -779,7 +914,7 @@ function importBackup(file) {
 
 function renderAll() {
   $('#todayDate').value=state.selectedDate;
-  renderScheduleStatus();renderKPIs();renderToday();renderWeek();renderWaivers();renderRoster();renderLeague();renderYahooStatus();
+  renderScheduleStatus();renderKPIs();renderToday();renderWeek();renderWaivers();renderRoster();renderLeague();renderYahooStatus();renderPersistenceStatus();renderHistory();
 }
 
 $$('.tab').forEach(btn=>btn.addEventListener('click',()=>{
@@ -806,8 +941,14 @@ $('#exportBtn').addEventListener('click',exportState);
 $('#importFile').addEventListener('change',e=>{const f=e.target.files?.[0];if(f)importBackup(f);e.target.value='';});
 $('#resetBtn').addEventListener('click',()=>{if(confirm('Reset all local Dead Puck data to the v2 seed? Yahoo server credentials are not affected.')){localStorage.removeItem(STORAGE_KEY);state=clone(seedState);saveState();renderAll();}});
 
+try {
+  await loadPersistedState();
+} catch (err) {
+  $('#saveStatus').textContent='Site storage unavailable';
+  renderPersistenceStatus(err.message);
+}
 renderAll();
-await loadYahooStatus();
+await Promise.all([loadYahooStatus(),loadHistory()]);
 if (new URLSearchParams(window.location.search).get('yahoo')==='connected') {
   history.replaceState({},document.title,window.location.pathname);
   await loadYahooStatus();
