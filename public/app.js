@@ -480,9 +480,10 @@ async function searchYahooPlayers() {
     if (position) params.set('position',position);
     const doc = await fetchXml('/api/yahoo/available?' + params.toString());
     const incoming = mergeYahooWaivers(parseYahooPlayers(doc,'yahoo-search'));
+    const manual = state.waivers.filter(p=>!p.yahooPlayerKey);
     const byKey = new Map(state.waivers.filter(p=>p.yahooPlayerKey).map(p=>[p.yahooPlayerKey,p]));
     for (const p of incoming) byKey.set(p.yahooPlayerKey,p);
-    state.waivers = [...byKey.values()];
+    state.waivers = [...manual, ...byKey.values()];
     state.yahoo.availableCount = state.waivers.length;
     saveState();
     renderAll();
