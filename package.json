@@ -1,15 +1,28 @@
 {
   "name": "dead-puck-situation-room",
-  "version": "2.1.0-alpha.1",
+  "version": "2.2.0-alpha.1",
   "private": true,
   "type": "module",
-  "description": "Dead Puck Society season-long Yahoo fantasy hockey situation room",
-  "scripts": {
-    "start": "node server.mjs",
-    "check": "node --check server.mjs && node --check lib/token-store.mjs && node --check lib/yahoo.mjs && node --check public/app.js && node --check public/logic.js",
-    "test": "node --test"
-  },
+  "description": "Dead Puck Society season-long Yahoo fantasy hockey situation room for ChatGPT Sites",
   "engines": {
-    "node": ">=20"
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "dev": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vite",
+    "build": "WRANGLER_LOG_PATH=.wrangler/wrangler.log tsc -p tsconfig.worker.json --noEmit && vite build",
+    "preview": "vite preview",
+    "check": "tsc -p tsconfig.worker.json --noEmit && node --check public/app.js && node --check public/logic.js",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "hono": "4.13.2"
+  },
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "1.37.1",
+    "@cloudflare/workers-types": "4.20260702.1",
+    "@openai/sites-vite-plugin": "0.2.0",
+    "typescript": "5.9.3",
+    "vite": "8.0.13",
+    "wrangler": "4.92.0"
   }
 }
