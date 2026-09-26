@@ -91,6 +91,25 @@ function projectionLabel(p) {
   if (!hasProjection(p)) return 'Projection needed';
   return p.projectionSource === 'manual' ? 'Manual' : p.projectionSource;
 }
+
+function projectionInputValue(p) {
+  return hasProjection(p) ? String(Number(p.fppg)) : '';
+}
+
+function applyProjectionInput(player, rawValue) {
+  const raw=String(rawValue ?? '').trim();
+  if (!raw) {
+    player.fppg=0;
+    player.projectionSource='unset';
+    player.projectionUpdatedAt=null;
+    return;
+  }
+  const value=Number(raw);
+  if (!Number.isFinite(value)) return;
+  player.fppg=value;
+  player.projectionSource='manual';
+  player.projectionUpdatedAt=new Date().toISOString();
+}
 function ownershipLabel(p) {
   const raw = String(p?.ownershipType || '').toLowerCase();
   if (raw.includes('waiver')) return 'Waivers';
@@ -800,15 +819,18 @@ function renderWeek() {
   wrap.innerHTML='';
   for (const d of w.days) {
     const cls=d.nightClass==='light'?'light-night':d.nightClass==='medium'?'medium-night':d.nightClass==='heavy'?'heavy-night':'';
-    wrap.insertAdjacentHTML('beforeend',`<article class="day-card ${cls}"><div class="date">${esc(fmtDate(d.date))}</div><div class="tiny">${d.games?`${d.games} NHL games · ${d.nightClass} night`:'No schedule data'}</div><div class="games">${d.expectedStarts.toFixed(1)}</div><div class="tiny">expected usable starts</div><div class="day-metrics"><div><span>Roster team games</span><strong>${d.scheduled.length}</strong></div><div><span>Blocked</span><strong>${d.blocked.length}</strong></div><div><span>Goalies TBD</span><strong>${d.goalieUnconfirmed.length}</strong></div><div><span>Proj. pts</span><strong>${d.points.toFixed(1)}</strong></div></div></article>`);
+    const loaded=Object.prototype.hasOwnProperty.call(state.schedule,d.date);
+    const scheduleText=loaded ? (d.games ? `${d.games} NHL games · ${d.nightClass} night` : '0 NHL games') : 'No schedule data';
+    wrap.insertAdjacentHTML('beforeend',`<article class="day-card ${cls}"><div class="date">${esc(fmtDate(d.date))}</div><div class="tiny">${scheduleText}</div><div class="games">${d.expectedStarts.toFixed(1)}</div><div class="tiny">expected usable starts</div><div class="day-metrics"><div><span>Roster team games</span><strong>${d.scheduled.length}</strong></div><div><span>Blocked</span><strong>${d.blocked.length}</strong></div><div><span>Goalies TBD</span><strong>${d.goalieUnconfirmed.length}</strong></div><div><span>Proj. pts</span><strong>${d.points.toFixed(1)}</strong></div></div></article>`);
   }
 }
 
 function candidateAnalysisRows() {
+  const scheduleReady=hasScheduleWindow(state.schedule,state.selectedDate);
   return state.waivers.map(c=>{
-    const analysis = hasProjection(c)
+    const analysis = hasProjection(c) && scheduleReady
       ? analyzeCandidate(c,state,league.activeSlots)
-      : {...candidateScheduleMetrics(c,state.schedule,state.selectedDate),delta:Number.NaN,usableDelta:Number.NaN,drop:null,projectionMissing:true};
+      : {...candidateScheduleMetrics(c,state.schedule,state.selectedDate),delta:Number.NaN,usableDelta:Number.NaN,drop:null,projectionMissing:!hasProjection(c),scheduleMissing:!scheduleReady};
     return {candidate:c,analysis};
   }).sort((a,b)=>{
     const aReady=hasProjection(a.candidate), bReady=hasProjection(b.candidate);
@@ -853,7 +875,7 @@ function renderWaivers() {
       <td>${esc((c.positions||[]).join('/'))}</td>
       <td>${statusBadge(c)}</td>
       <td>${owned}</td>
-      <td><input class="w-fppg input-small" data-id="${esc(c.id)}" type="number" step="0.01" min="-20" max="30" value="${Number(c.fppg)||0}" /><div class="mini-note">${esc(projectionLabel(c))}</div></td>
+      <td><input class="w-fppg input-small" data-id="${esc(c.id)}" type="number" step="0.01" min="-20" max="30" value="${esc(projectionInputValue(c))}" /><div class="mini-note">${esc(projectionLabel(c))}</div></td>
       <td>${c.yahooSeasonPoints==null?'—':Number(c.yahooSeasonPoints).toFixed(1)}</td>
       <td>${a.games}</td>
       <td>${a.light}</td>
@@ -865,9 +887,7 @@ function renderWaivers() {
   body.querySelectorAll('.w-fppg').forEach(el=>el.addEventListener('change',e=>{
     const p=state.waivers.find(x=>x.id===e.target.dataset.id);
     if (!p) return;
-    p.fppg=Number(e.target.value)||0;
-    p.projectionSource='manual';
-    p.projectionUpdatedAt=new Date().toISOString();
+    applyProjectionInput(p,e.target.value);
     saveState({source:'manual',action:'waiver-projection-edit',entityType:'player',entityId:p.yahooPlayerKey||p.id,after:{fppg:p.fppg,projectionSource:p.projectionSource}});renderAll();
   }));
   body.querySelectorAll('.stage-waiver').forEach(btn=>btn.addEventListener('click',()=>stageCandidate(btn.dataset.id)));
@@ -915,7 +935,7 @@ function renderRoster() {
       <td><input class="r-team input-tiny" ${locked} value="${esc(p.team)}" maxlength="4" /><div class="mini-note">${esc((p.positions||[]).join('/'))}</div><input class="r-pos visually-hidden" ${locked} value="${esc((p.positions||[]).join('/'))}" /></td>
       <td><input class="r-selected input-tiny" ${locked} value="${esc(p.selectedPosition||'BN')}" /></td>
       <td><input class="r-status input-tiny" ${locked} value="${esc(p.status||'')}" placeholder="Active" /></td>
-      <td><input class="r-fppg input-small" type="number" step="0.01" min="-20" max="30" value="${Number(p.fppg)||0}" /><div class="mini-note">${esc(projectionLabel(p))}</div></td>
+      <td><input class="r-fppg input-small" type="number" step="0.01" min="-20" max="30" value="${esc(projectionInputValue(p))}" /><div class="mini-note">${esc(projectionLabel(p))}</div></td>
       <td>${p.yahooSeasonPoints==null?'—':Number(p.yahooSeasonPoints).toFixed(1)}</td>
       <td>${owned}</td>
       <td>${goalie?`<input class="r-start input-small" type="number" step="5" min="0" max="100" value="${Math.round((Number(p.startProbability)||0)*100)}" />`:'<span class="mini-note">n/a</span>'}</td>
@@ -944,11 +964,7 @@ function handleRosterEdit(e) {
   p.positions=parsePositions(tr.querySelector('.r-pos').value);
   p.selectedPosition=tr.querySelector('.r-selected').value.trim().toUpperCase() || 'BN';
   p.status=tr.querySelector('.r-status').value.trim().toUpperCase();
-  p.fppg=Number(tr.querySelector('.r-fppg').value)||0;
-  if (e.target.classList.contains('r-fppg')) {
-    p.projectionSource='manual';
-    p.projectionUpdatedAt=new Date().toISOString();
-  }
+  if (e.target.classList.contains('r-fppg')) applyProjectionInput(p,tr.querySelector('.r-fppg').value);
   p.core=tr.querySelector('.r-core').checked;
   p.canDrop=p.core?false:tr.querySelector('.r-drop').checked;
   p.startProbability=isGoalie(p)?Math.max(0,Math.min(1,(Number(tr.querySelector('.r-start')?.value)||0)/100)):1;
