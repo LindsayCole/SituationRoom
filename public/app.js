@@ -6,6 +6,7 @@ import {
   candidateScheduleMetrics,
   dayAvailability,
   gamesOn,
+  hasScheduleWindow,
   isGoalie,
   isReserve,
   isoDate,
@@ -56,21 +57,8 @@ const league = {
   ]
 };
 
-function seedPlayer(name, team, positions) {
-  return {
-    id: makeUuid(), name, team, positions, fppg:0, core:true, canDrop:false,
-    selectedPosition:'BN', status:'', source:'seed', yahooPlayerKey:null,
-    yahooSeasonPoints:null, ownershipType:null,
-    startProbability: positions.includes('G') ? 0 : 1
-  };
-}
-
 const seedState = {
-  roster: [
-    seedPlayer('Nick Suzuki','MTL',['C']),
-    seedPlayer('Matt Boldy','MIN',['LW','RW']),
-    seedPlayer('Quinn Hughes','MIN',['D'])
-  ],
+  roster: [],
   waivers: [],
   movesThisWeek: 0,
   schedule: {},
@@ -158,12 +146,13 @@ function migrateLegacy(legacy) {
 }
 
 function normalizeState(parsed) {
+  const source = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
   return {
     ...clone(seedState),
-    ...(parsed || {}),
-    roster: Array.isArray(parsed?.roster) ? parsed.roster.map(normalizeLoadedPlayer) : clone(seedState.roster),
-    waivers: Array.isArray(parsed?.waivers) ? parsed.waivers.map(normalizeLoadedPlayer) : [],
-    yahoo: {...clone(seedState.yahoo), ...(parsed?.yahoo || {})}
+    ...source,
+    roster: Array.isArray(source.roster) ? source.roster.map(normalizeLoadedPlayer) : clone(seedState.roster),
+    waivers: Array.isArray(source.waivers) ? source.waivers.map(normalizeLoadedPlayer) : [],
+    yahoo: {...clone(seedState.yahoo), ...(source.yahoo || {})}
   };
 }
 
@@ -179,12 +168,52 @@ function loadBrowserStateForMigration() {
   return null;
 }
 
+function readPendingRecovery() {
+  try {
+    const raw=localStorage.getItem(PENDING_RECOVERY_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch (err) {
+    console.warn('Pending recovery state could not be read.',err);
+    return null;
+  }
+}
+
 let state = clone(seedState);
 let stateRevision = 0;
 let stateUpdatedAt = null;
-let saveChain = Promise.resolve();
+let pendingSaves = [];
+let saveDrainPromise = null;
 let historyRows = [];
 let yahooStatus = { configured:false, connected:false, writeEnabled:false, readOnlyDefault:true };
+let storageError = '';
+let storageConflict = false;
+
+function persistRecoveryCopy(failedAt=null) {
+  if (!pendingSaves.length) {
+    localStorage.removeItem(PENDING_RECOVERY_KEY);
+    return;
+  }
+  const latest=pendingSaves[pendingSaves.length-1];
+  const pendingChanges=pendingSaves.map(entry=>({
+    source:entry.change.source,
+    action:entry.change.action,
+    entityType:entry.change.entityType,
+    entityId:entry.change.entityId,
+    metadata:entry.change.metadata,
+    clientChangeId:entry.change.clientChangeId
+  }));
+  try {
+    localStorage.setItem(PENDING_RECOVERY_KEY,JSON.stringify({
+      version:2,
+      state:latest.snapshot,
+      baseRevision:stateRevision,
+      pendingChanges,
+      failedAt:failedAt || new Date().toISOString()
+    }));
+  } catch (err) {
+    console.warn('Emergency recovery copy could not be written.',err);
+  }
+}
 
 async function loadPersistedState() {
   $('#saveStatus').textContent = 'Loading Site storage…';
@@ -194,80 +223,120 @@ async function loadPersistedState() {
     stateRevision = Number(stored.revision) || 0;
     stateUpdatedAt = stored.updatedAt || null;
     $('#saveStatus').textContent = `Saved to Site · rev ${stateRevision}`;
+  } else {
+    const browser = loadBrowserStateForMigration();
+    state = browser?.state || clone(seedState);
+    const saved = await saveState({
+      source:'system',
+      action:browser ? 'migrate-browser-state' : 'initialize-state',
+      metadata:{browserSource:browser?.source || null}
+    });
+    if (!saved) throw new Error(storageError || 'Initial Site state could not be saved.');
+    if (browser) {
+      localStorage.removeItem(STORAGE_KEY);
+      localStorage.removeItem(LEGACY_STORAGE_KEY);
+    }
+  }
+
+  const recovery=readPendingRecovery();
+  if (!recovery?.state) return;
+
+  if (Number(recovery.baseRevision) === stateRevision) {
+    state=normalizeState(recovery.state);
+    const pendingActions=Array.isArray(recovery.pendingChanges)
+      ? recovery.pendingChanges.map(x=>x?.action).filter(Boolean)
+      : [];
+    const saved=await saveState({
+      source:'system',
+      action:'recovery-restore',
+      metadata:{pendingActions,recoveredFrom:recovery.failedAt || null}
+    });
+    if (saved) localStorage.removeItem(PENDING_RECOVERY_KEY);
     return;
   }
 
-  const browser = loadBrowserStateForMigration();
-  state = browser?.state || clone(seedState);
-  await saveState({
-    source:'system',
-    action:browser ? 'migrate-browser-state' : 'initialize-state',
-    metadata:{browserSource:browser?.source || null}
-  });
-  if (browser) {
-    localStorage.removeItem(STORAGE_KEY);
-    localStorage.removeItem(LEGACY_STORAGE_KEY);
-  }
+  state=normalizeState(recovery.state);
+  storageConflict=true;
+  storageError='A browser recovery copy exists, but the Site has newer state. Export this recovered view if needed, then use “Reload Site state” to discard it.';
+  $('#saveStatus').textContent='Recovery conflict · browser copy loaded';
 }
 
 function saveState(change={}) {
-  const snapshot = clone(state);
-  const clientChangeId = makeUuid();
-  const normalizedChange = {
-    source:change.source || 'manual',
-    action:change.action || 'state-update',
-    entityType:change.entityType || null,
-    entityId:change.entityId || null,
-    before:change.before,
-    after:change.after,
-    metadata:change.metadata,
-    clientChangeId
-  };
-
-  $('#saveStatus').textContent = 'Saving to Site…';
-  saveChain = saveChain.catch(()=>{}).then(async()=>{
-    try {
-      const result = await fetchJson('/api/state',{
-        method:'PUT',
-        headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({
-          state:snapshot,
-          baseRevision:stateRevision,
-          change:normalizedChange
-        })
-      });
-      stateRevision = Number(result.revision) || stateRevision;
-      stateUpdatedAt = result.updatedAt || new Date().toISOString();
-      localStorage.removeItem(PENDING_RECOVERY_KEY);
-      $('#saveStatus').textContent = `Saved to Site · rev ${stateRevision}`;
-      historyRows.unshift({
-        id:result.changeId || clientChangeId,
-        revision:stateRevision,
-        source:normalizedChange.source,
-        action:normalizedChange.action,
-        entityType:normalizedChange.entityType,
-        entityId:normalizedChange.entityId,
-        metadata:normalizedChange.metadata || null,
-        createdAt:stateUpdatedAt
-      });
-      historyRows = historyRows.slice(0,100);
-      renderPersistenceStatus();
-      renderHistory();
-      return result;
-    } catch (err) {
-      localStorage.setItem(PENDING_RECOVERY_KEY,JSON.stringify({
-        state:snapshot,
-        change:normalizedChange,
-        failedAt:new Date().toISOString()
-      }));
-      $('#saveStatus').textContent = err.status===409
-        ? 'Save conflict · recovery copy kept in browser'
-        : 'Save failed · recovery copy kept in browser';
-      renderPersistenceStatus(err.message);
-      throw err;
+  const entry={
+    snapshot:clone(state),
+    change:{
+      source:change.source || 'manual',
+      action:change.action || 'state-update',
+      entityType:change.entityType || null,
+      entityId:change.entityId || null,
+      before:change.before,
+      after:change.after,
+      metadata:change.metadata,
+      clientChangeId:makeUuid()
     }
-  });
-  return saveChain;
+  };
+  pendingSaves.push(entry);
+  persistRecoveryCopy();
+  $('#saveStatus').textContent = storageConflict ? 'Save blocked by conflict' : 'Saving to Site…';
+  return drainSaveQueue();
+}
+
+function drainSaveQueue() {
+  if (saveDrainPromise) return saveDrainPromise;
+  if (storageConflict) {
+    renderPersistenceStatus();
+    return Promise.resolve(false);
+  }
+
+  saveDrainPromise=(async()=>{
+    while (pendingSaves.length) {
+      const entry=pendingSaves[0];
+      try {
+        const result=await fetchJson('/api/state',{
+          method:'PUT',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({
+            state:entry.snapshot,
+            baseRevision:stateRevision,
+            change:entry.change
+          })
+        });
+
+        stateRevision=Number(result.revision) || stateRevision;
+        stateUpdatedAt=result.updatedAt || new Date().toISOString();
+        pendingSaves.shift();
+        storageError='';
+        storageConflict=false;
+        historyRows.unshift({
+          id:result.changeId || entry.change.clientChangeId,
+          revision:stateRevision,
+          source:entry.change.source,
+          action:entry.change.action,
+          entityType:entry.change.entityType,
+          entityId:entry.change.entityId,
+          metadata:entry.change.metadata || null,
+          createdAt:stateUpdatedAt
+        });
+        historyRows=historyRows.slice(0,100);
+        persistRecoveryCopy();
+        $('#saveStatus').textContent = `Saved to Site · rev ${stateRevision}`;
+        renderPersistenceStatus();
+        renderHistory();
+      } catch (err) {
+        storageError=err.message || 'Site save failed.';
+        storageConflict=err.status===409;
+        persistRecoveryCopy(new Date().toISOString());
+        $('#saveStatus').textContent = storageConflict
+          ? 'Save conflict · recovery copy kept in browser'
+          : 'Save failed · recovery copy kept in browser';
+        renderPersistenceStatus();
+        return false;
+      }
+    }
+    return true;
+  })().finally(()=>{ saveDrainPromise=null; });
+
+  return saveDrainPromise;
 }
 
 async function fetchJson(url, options) {
