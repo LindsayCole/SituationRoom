@@ -28,6 +28,14 @@ test('negative expected value player is not forced into lineup',()=>{
   assert.equal(r.points,0);
 });
 
+test('injured goalie is unavailable, not mislabeled as an unconfirmed starter',()=>{
+  const roster=[p('g','Injured Goalie','AAA',['G'],6,{status:'IR',startProbability:0})];
+  const r=optimizeDay(roster,schedule,'2026-10-01');
+  assert.equal(r.starters.length,0);
+  assert.equal(r.goalieUnconfirmed.length,0);
+  assert.equal(r.scheduled.length,0);
+});
+
 test('unconfirmed goalie team game is not counted as a goalie start',()=>{
   const roster=[p('g','Goalie','AAA',['G'],6,{startProbability:0})];
   const r=optimizeDay(roster,schedule,'2026-10-01');
@@ -62,6 +70,8 @@ test('parsePlayerLines makes goalies unconfirmed by default',()=>{
   assert.equal(players.length,2);
   assert.equal(players[0].startProbability,1);
   assert.equal(players[1].startProbability,0);
+  assert.equal(players[0].projectionSource,'manual');
+  assert.equal(players[1].projectionSource,'manual');
 });
 
 test('week projection returns seven days',()=>{
