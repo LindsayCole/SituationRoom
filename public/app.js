@@ -910,22 +910,32 @@ function renderWaivers() {
     return (!filter || text.includes(filter)) && (!posFilter || (c.positions||[]).includes(posFilter));
   });
   $('#waiverPoolSummary').textContent = state.waivers.length
-    ? `${rows.length} shown · ${state.waivers.length} in local Yahoo/manual pool`
+    ? `${rows.length} shown · ${state.waivers.length} in stored Yahoo/manual pool`
     : 'No Yahoo player pool loaded yet';
   if (!rows.length) {
     body.innerHTML='<tr><td colspan="12" class="muted">No waiver candidates match the current pool/filter.</td></tr>';
     return;
   }
   const scheduleReady=hasScheduleWindow(state.schedule,state.selectedDate);
+  const rosterReady=rosterProjectionComplete();
   rows.forEach((x,i)=>{
     const c=x.candidate,a=x.analysis;
     const projectionReady=hasProjection(c);
-    const actionable=projectionReady && Number.isFinite(a.delta);
-    const deltaText=scheduleReady && actionable ? `${a.delta>=0?'+':''}${a.delta.toFixed(1)}` : '—';
+    const actionable=scheduleReady && rosterReady && projectionReady && Number.isFinite(a.delta);
+    const deltaText=actionable ? `${a.delta>=0?'+':''}${a.delta.toFixed(1)}` : '—';
     const gainCls=actionable && a.delta>=0?'gain-pos':'gain-neg';
-    const buttonDisabled=!scheduleReady || !actionable || state.movesThisWeek>=league.maxAddsPerWeek;
-    const buttonLabel=!projectionReady?'Set projection':state.movesThisWeek>=league.maxAddsPerWeek?'Weekly limit reached':'Stage locally';
+    const buttonDisabled=!actionable || state.movesThisWeek>=league.maxAddsPerWeek;
+    const buttonLabel=!scheduleReady?'Load schedule':!rosterReady?'Roster projections needed':!projectionReady?'Set projection':state.movesThisWeek>=league.maxAddsPerWeek?'Weekly limit reached':'Stage scenario';
     const owned=c.percentOwned==null?'—':`${c.percentOwned.toFixed(0)}%`;
+    const dropText=!scheduleReady
+      ? '<span class="muted">Schedule needed</span>'
+      : !rosterReady
+        ? '<span class="muted">Roster projections needed</span>'
+        : !projectionReady
+          ? '<span class="muted">Projection needed</span>'
+          : !actionable
+            ? 'No legal drop'
+            : a.drop?esc(a.drop.name):'<span class="gain-pos">Open slot</span>';
     body.insertAdjacentHTML('beforeend',`<tr>
       <td><span class="rank-badge">${i+1}</span></td>
       <td><div class="player-cell">${playerAvatar(c)}<div><strong>${esc(c.name)}</strong><div class="mini-note source-yahoo">${esc(c.team)} · ${esc(ownershipLabel(c))}</div></div></div></td>
@@ -936,8 +946,8 @@ function renderWaivers() {
       <td>${c.yahooSeasonPoints==null?'—':Number(c.yahooSeasonPoints).toFixed(1)}</td>
       <td>${a.games}</td>
       <td>${a.light}</td>
-      <td>${!scheduleReady?'<span class="muted">Schedule needed</span>':!projectionReady?'<span class="muted">Projection needed</span>':!actionable?'No legal drop':a.drop?esc(a.drop.name):'<span class="gain-pos">Open slot</span>'}</td>
-      <td class="${gainCls}">${deltaText}${scheduleReady && actionable?` <span class="mini-note">(${a.usableDelta>=0?'+':''}${a.usableDelta.toFixed(1)} starts)</span>`:''}</td>
+      <td>${dropText}</td>
+      <td class="${gainCls}">${deltaText}${actionable?` <span class="mini-note">(${a.usableDelta>=0?'+':''}${a.usableDelta.toFixed(1)} starts)</span>`:''}</td>
       <td><button class="btn small-btn stage-waiver" data-id="${esc(c.id)}" ${buttonDisabled?'disabled':''}>${buttonLabel}</button></td>
     </tr>`);
   });
@@ -952,11 +962,15 @@ function renderWaivers() {
 
 function stageCandidate(id) {
   if (state.movesThisWeek>=league.maxAddsPerWeek) {
-    alert('The weekly acquisition limit is already reached. No local move will be staged.');
+    alert('The weekly acquisition limit is already reached. No scenario move will be staged.');
     return;
   }
   if (!hasScheduleWindow(state.schedule,state.selectedDate)) {
     alert('Load the NHL schedule for the selected 7-day window before evaluating a waiver move.');
+    return;
+  }
+  if (!rosterProjectionComplete()) {
+    alert('Complete projections for the active/bench roster before evaluating add/drop value. Unknown roster value is not treated as zero.');
     return;
   }
   const c=state.waivers.find(x=>x.id===id);
@@ -967,14 +981,14 @@ function stageCandidate(id) {
   }
   const a=analyzeCandidate(c,state,league.activeSlots);
   if (!Number.isFinite(a.delta)) {
-    alert('There is no legal local roster path for this player without dropping a protected/reserve player.');
+    alert('There is no legal stored-roster path for this player without dropping a protected/reserve player.');
     return;
   }
   const dropName=a.drop?.name || 'an open active/bench slot';
-  const msg=`Stage ${c.name} in the local model using ${dropName}${a.drop?' as the drop':''}?\n\nProjected 7-day change: ${a.delta>=0?'+':''}${a.delta.toFixed(1)} points.\n\nThis changes only the local model. It does NOT use a Yahoo acquisition or submit a transaction.`;
+  const msg=`Stage ${c.name} in the stored scenario using ${dropName}${a.drop?' as the drop':''}?\n\nProjected 7-day change: ${a.delta>=0?'+':''}${a.delta.toFixed(1)} points.\n\nThis changes only the Situation Room scenario. It does NOT use a Yahoo acquisition or submit a transaction.`;
   if (!confirm(msg)) return;
   if (a.drop) state.roster=state.roster.filter(p=>p.id!==a.drop.id);
-  state.roster.push({...c,id:makeUuid(),selectedPosition:'BN',source:'staged-local'});
+  state.roster.push({...c,id:makeUuid(),selectedPosition:'BN',source:'staged-scenario'});
   state.waivers=state.waivers.filter(x=>x.id!==id);
   saveState({source:'manual',action:'stage-candidate',entityType:'player',entityId:c.yahooPlayerKey||c.id,metadata:{candidate:c.name,drop:a.drop?.name||null,projectedDelta:a.delta}});renderAll();
 }
@@ -998,14 +1012,14 @@ function renderRoster() {
       <td>${goalie?`<input class="r-start input-small" type="number" step="5" min="0" max="100" value="${Math.round((Number(p.startProbability)||0)*100)}" />`:'<span class="mini-note">n/a</span>'}</td>
       <td class="checkbox-cell"><input class="r-core" type="checkbox" ${p.core?'checked':''} /></td>
       <td class="checkbox-cell"><input class="r-drop" type="checkbox" ${p.canDrop!==false?'checked':''} ${p.core?'disabled':''} /></td>
-      <td><button class="btn small-btn remove-roster">Remove local</button></td>
+      <td><button class="btn small-btn remove-roster">Remove</button></td>
     </tr>`);
   });
   body.querySelectorAll('input').forEach(el=>el.addEventListener('change',handleRosterEdit));
   body.querySelectorAll('.remove-roster').forEach(btn=>btn.addEventListener('click',e=>{
     const id=e.target.closest('tr').dataset.id;
     const p=state.roster.find(x=>x.id===id);
-    if (p && confirm(`Remove ${p.name} from the local model? This does not affect Yahoo.`)) {
+    if (p && confirm(`Remove ${p.name} from the stored Situation Room model? This does not affect Yahoo.`)) {
       state.roster=state.roster.filter(x=>x.id!==id);saveState({source:'manual',action:'roster-remove',entityType:'player',entityId:p.yahooPlayerKey||p.id,before:p});renderAll();
     }
   }));
