@@ -29,10 +29,14 @@ export function isReserve(player) {
   return ['IR','IR+'].includes(String(player.selectedPosition || '').toUpperCase());
 }
 
-export function dayAvailability(player, date) {
-  if (isReserve(player)) return 0;
+export function isUnavailable(player) {
+  if (isReserve(player)) return true;
   const status = String(player.status || '').toUpperCase();
-  if (['IR','IR+','NA','O'].includes(status)) return 0;
+  return ['IR','IR+','NA','O'].includes(status);
+}
+
+export function dayAvailability(player, date) {
+  if (isUnavailable(player)) return 0;
   if (!isGoalie(player)) return 1;
   const specific = player.goalieStartProbabilities?.[date];
   const fallback = player.startProbability;
@@ -72,8 +76,9 @@ export function eligibleSlotIndexes(player, activeSlots=ACTIVE_SLOTS) {
 
 export function optimizeDay(roster, schedule, date, activeSlots=ACTIVE_SLOTS) {
   const teamGamePlayers=(roster||[]).filter(p=>playerHasTeamGame(p,schedule,date));
-  const goalieUnconfirmed=teamGamePlayers.filter(p=>isGoalie(p) && dayAvailability(p,date)<=0);
-  const playing=teamGamePlayers
+  const scheduled=teamGamePlayers.filter(p=>!isUnavailable(p));
+  const goalieUnconfirmed=scheduled.filter(p=>isGoalie(p) && dayAvailability(p,date)<=0);
+  const playing=scheduled
     .map(p=>({...p,availability:dayAvailability(p,date),fppg:Number(p.fppg)||0}))
     .filter(p=>p.availability>0);
 
@@ -105,7 +110,7 @@ export function optimizeDay(roster, schedule, date, activeSlots=ACTIVE_SLOTS) {
   return {
     starters:best.assign.sort((a,b)=>a.slotIndex-b.slotIndex),
     blocked,
-    scheduled:teamGamePlayers,
+    scheduled,
     eligiblePlaying:playing,
     goalieUnconfirmed,
     points:best.points,
@@ -177,6 +182,7 @@ export function parsePlayerLines(text) {
       id:makeUuid(),name,team:team.toUpperCase(),positions,
       fppg:Number(fppg)||0,core:false,canDrop:true,
       selectedPosition:'BN',status:'',source:'manual',
+      projectionSource:'manual',projectionUpdatedAt:null,
       startProbability:goalie ? 0 : 1
     });
   }

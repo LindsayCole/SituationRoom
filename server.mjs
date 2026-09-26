@@ -3,7 +3,7 @@ import { promises as fs, readFileSync } from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { buildAuthorizationUrl, exchangeAuthorizationCode, fetchYahooXml, getValidToken, yahooConfigured } from './lib/yahoo.mjs';
+import { buildAuthorizationUrl, exchangeAuthorizationCode, fetchYahooXml, getValidToken, yahooConfigured, yahooMissingConfig } from './lib/yahoo.mjs';
 import { deleteToken } from './lib/token-store.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -34,15 +34,15 @@ function loadDotEnv(file) {
 
 function json(res, status, value) {
   const body = JSON.stringify(value);
-  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Content-Length': Buffer.byteLength(body), ...securityHeaders() });
+  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Content-Length': Buffer.byteLength(body), 'Cache-Control':'no-store', ...securityHeaders() });
   res.end(body);
 }
 function xml(res, status, value) {
-  res.writeHead(status, { 'Content-Type': 'application/xml; charset=utf-8', 'Content-Length': Buffer.byteLength(value), ...securityHeaders() });
+  res.writeHead(status, { 'Content-Type': 'application/xml; charset=utf-8', 'Content-Length': Buffer.byteLength(value), 'Cache-Control':'no-store', ...securityHeaders() });
   res.end(value);
 }
 function redirect(res, location, headers={}) {
-  res.writeHead(302, { Location: location, ...headers, ...securityHeaders() });
+  res.writeHead(302, { Location: location, 'Cache-Control':'no-store', ...headers, ...securityHeaders() });
   res.end();
 }
 function securityHeaders() {
@@ -82,7 +82,7 @@ async function yahooProxy(req, res, url) {
     const teamKey = url.searchParams.get('teamKey');
     const date = url.searchParams.get('date');
     if (!validateTeamKey(teamKey) || !validateDate(date)) return json(res, 400, { error: 'Valid teamKey and date are required.' });
-    return xml(res, 200, await fetchYahooXml(`/team/${teamKey}/roster;date=${date}/players`));
+    return xml(res, 200, await fetchYahooXml(`/team/${teamKey}/roster;date=${date}/players;out=stats,percent_owned`));
   }
   if (url.pathname === '/api/yahoo/available') {
     const leagueKey = url.searchParams.get('leagueKey');
@@ -92,7 +92,9 @@ async function yahooProxy(req, res, url) {
     const count = intParam(url.searchParams.get('count'), 50, 1, 100);
     const posRaw = String(url.searchParams.get('position') || '').toUpperCase();
     const pos = ['C','LW','RW','D','G'].includes(posRaw) ? `;position=${posRaw}` : '';
-    const apiPath = `/league/${leagueKey}/players;status=${status}${pos};sort=PTS;sort_type=season;start=${start};count=${count};out=stats,ownership,percent_owned`;
+    const searchRaw = String(url.searchParams.get('search') || '').trim().slice(0, 60);
+    const search = searchRaw ? `;search=${encodeURIComponent(searchRaw)}` : '';
+    const apiPath = `/league/${leagueKey}/players;status=${status}${pos}${search};sort=PTS;sort_type=season;start=${start};count=${count};out=stats,ownership,percent_owned`;
     return xml(res, 200, await fetchYahooXml(apiPath));
   }
   if (url.pathname === '/api/yahoo/transactions') {
@@ -134,7 +136,7 @@ const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, APP_ORIGIN);
 
-    if (url.pathname === '/api/health') return json(res, 200, { ok: true, version: '2.0.0-alpha.1' });
+    if (url.pathname === '/api/health') return json(res, 200, { ok: true, version: '2.1.0-alpha.1' });
 
     if (url.pathname === '/api/nhl/schedule') {
       const date = url.searchParams.get('date');
@@ -154,6 +156,7 @@ const server = http.createServer(async (req, res) => {
       }
       return json(res, 200, {
         configured,
+        missingConfig:yahooMissingConfig(),
         connected:Boolean(token),
         expiresAt:token?.expiresAt || null,
         redirectUri:process.env.YAHOO_REDIRECT_URI || null,
@@ -195,7 +198,8 @@ const server = http.createServer(async (req, res) => {
     json(res, 404, { error: 'Not found.' });
   } catch (err) {
     console.error(err);
-    json(res, err?.status || 500, { error: err.message || 'Server error.', details: typeof err?.details === 'string' ? err.details : undefined });
+    const details = process.env.NODE_ENV === 'production' ? undefined : (typeof err?.details === 'string' ? err.details : undefined);
+    json(res, err?.status || 500, { error: err.message || 'Server error.', details });
   }
 });
 
