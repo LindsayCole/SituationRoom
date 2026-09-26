@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { analyzeCandidate, optimizeDay, parsePlayerLines, projectWeek } from '../public/logic.js';
+import { analyzeCandidate, hasScheduleWindow, optimizeDay, parsePlayerLines, projectWeek } from '../public/logic.js';
 
 const schedule={
   '2026-10-01':{games:5,teams:['AAA','BBB','CCC','DDD']},
@@ -78,4 +78,25 @@ test('week projection returns seven days',()=>{
   const w=projectWeek([p('1','A','AAA',['C'],4)],schedule,'2026-10-01');
   assert.equal(w.days.length,7);
   assert.ok(w.usableGames>0);
+});
+
+
+test('negative benched value is not reported as lineup leakage',()=>{
+  const roster=[p('1','Bad','AAA',['C'],-2)];
+  const r=optimizeDay(roster,schedule,'2026-10-01');
+  assert.equal(r.leakage,0);
+});
+
+test('manual import without FPPG remains unprojected instead of inventing zero',()=>{
+  const players=parsePlayerLines('Unknown | AAA | C');
+  assert.equal(players.length,1);
+  assert.equal(players[0].fppg,0);
+  assert.equal(players[0].projectionSource,'unset');
+});
+
+test('schedule readiness requires the complete requested window',()=>{
+  assert.equal(hasScheduleWindow(schedule,'2026-10-01'),true);
+  const partial={...schedule};
+  delete partial['2026-10-04'];
+  assert.equal(hasScheduleWindow(partial,'2026-10-01'),false);
 });
