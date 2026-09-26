@@ -168,25 +168,58 @@ function normalizeLoadedPlayer(p) {
   };
 }
 
+function isValidIsoDate(value) {
+  const text=String(value || '');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return false;
+  const d=new Date(`${text}T12:00:00`);
+  return !Number.isNaN(d.getTime()) && isoDate(d)===text;
+}
+
+function normalizeSchedule(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  const out={};
+  for (const [date,value] of Object.entries(raw)) {
+    if (!isValidIsoDate(date) || !value || typeof value !== 'object' || Array.isArray(value)) continue;
+    const gamesRaw=Number(value.games);
+    const games=Number.isFinite(gamesRaw) ? Math.max(0,Math.trunc(gamesRaw)) : 0;
+    const teams=Array.isArray(value.teams)
+      ? [...new Set(value.teams.map(x=>String(x||'').trim().toUpperCase()).filter(Boolean))]
+      : [];
+    out[date]={games,teams};
+  }
+  return out;
+}
+
+function validTimestampOrNull(value) {
+  if (!value) return null;
+  const d=new Date(value);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
+}
+
 function migrateLegacy(legacy) {
-  const migrated = clone(seedState);
-  if (Array.isArray(legacy?.roster)) migrated.roster = legacy.roster.map(normalizeLoadedPlayer);
-  if (Array.isArray(legacy?.waivers)) migrated.waivers = legacy.waivers.map(normalizeLoadedPlayer);
-  if (legacy?.schedule && typeof legacy.schedule === 'object') migrated.schedule = legacy.schedule;
-  if (legacy?.scheduleFetchedAt) migrated.scheduleFetchedAt = legacy.scheduleFetchedAt;
-  if (legacy?.selectedDate) migrated.selectedDate = legacy.selectedDate;
-  if (Number.isFinite(Number(legacy?.movesThisWeek))) migrated.movesThisWeek = Math.max(0,Math.min(league.maxAddsPerWeek,Number(legacy.movesThisWeek)));
-  return migrated;
+  return normalizeState(legacy);
 }
 
 function normalizeState(parsed) {
   const source = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  const moves=Number(source.movesThisWeek);
+  const rawYahoo=source.yahoo && typeof source.yahoo === 'object' && !Array.isArray(source.yahoo)
+    ? source.yahoo
+    : {};
   return {
     ...clone(seedState),
     ...source,
-    roster: Array.isArray(source.roster) ? source.roster.map(normalizeLoadedPlayer) : clone(seedState.roster),
-    waivers: Array.isArray(source.waivers) ? source.waivers.map(normalizeLoadedPlayer) : [],
-    yahoo: {...clone(seedState.yahoo), ...(source.yahoo || {})}
+    roster: Array.isArray(source.roster) ? source.roster.filter(x=>x&&typeof x==='object'&&!Array.isArray(x)).map(normalizeLoadedPlayer) : clone(seedState.roster),
+    waivers: Array.isArray(source.waivers) ? source.waivers.filter(x=>x&&typeof x==='object'&&!Array.isArray(x)).map(normalizeLoadedPlayer) : [],
+    movesThisWeek:Number.isFinite(moves)?Math.max(0,Math.min(league.maxAddsPerWeek,Math.trunc(moves))):0,
+    schedule:normalizeSchedule(source.schedule),
+    scheduleFetchedAt:validTimestampOrNull(source.scheduleFetchedAt),
+    selectedDate:isValidIsoDate(source.selectedDate)?source.selectedDate:isoDate(new Date()),
+    yahoo:{
+      ...clone(seedState.yahoo),
+      ...rawYahoo,
+      lastSyncAt:validTimestampOrNull(rawYahoo.lastSyncAt)
+    }
   };
 }
 
@@ -1113,15 +1146,28 @@ function exportState() {
 }
 
 function importBackup(file) {
+  if (file.size > 2 * 1024 * 1024) {
+    alert('Backup is too large to import safely.');
+    return;
+  }
   const reader=new FileReader();
-  reader.onload=()=>{
+  reader.onload=async()=>{
     try {
       const payload=JSON.parse(reader.result);
-      if (!payload.state || !Array.isArray(payload.state.roster)) throw new Error('Not a Dead Puck backup.');
-      state={...clone(seedState),...payload.state,roster:payload.state.roster.map(normalizeLoadedPlayer),waivers:(payload.state.waivers||[]).map(normalizeLoadedPlayer),yahoo:{...clone(seedState.yahoo),...(payload.state.yahoo||{})}};
-      saveState({source:'manual',action:'backup-import',metadata:{rosterCount:state.roster.length,waiverCount:state.waivers.length}});renderAll();
-    } catch (err) { alert(`Import failed: ${err.message}`); }
+      if (!payload.state || typeof payload.state !== 'object' || !Array.isArray(payload.state.roster)) {
+        throw new Error('Not a Dead Puck backup.');
+      }
+      const incoming=normalizeState(payload.state);
+      if (!confirm(`Replace the stored Situation Room state with this backup?\n\nRoster: ${incoming.roster.length}\nWaiver pool: ${incoming.waivers.length}\nSelected date: ${incoming.selectedDate}\n\nThis creates a new revision and does not affect Yahoo.`)) return;
+      state=incoming;
+      const saved=await saveState({source:'manual',action:'backup-import',metadata:{rosterCount:state.roster.length,waiverCount:state.waivers.length}});
+      renderAll();
+      if (!saved) alert('The backup is loaded in the recovery copy but could not be saved to Site storage. Use History / Storage to retry.');
+    } catch (err) {
+      alert(`Import failed: ${err.message}`);
+    }
   };
+  reader.onerror=()=>alert('Import failed: the backup file could not be read.');
   reader.readAsText(file);
 }
 
