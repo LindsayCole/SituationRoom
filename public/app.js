@@ -482,6 +482,7 @@ async function refreshSchedule() {
     const start = state.selectedDate || isoDate(new Date());
     const data = await fetchJson(`/api/nhl/schedule?date=${encodeURIComponent(start)}`);
     const schedule = {...state.schedule};
+    for (let i=0;i<7;i++) schedule[addDays(start,i)]={games:0,teams:[]};
     for (const day of (data.gameWeek || [])) {
       const teams=[];
       for (const g of (day.games || [])) {
@@ -515,15 +516,20 @@ async function loadHistory() {
   renderHistory();
 }
 
-function renderPersistenceStatus(errorText='') {
+function renderPersistenceStatus(errorText=storageError) {
   const pill=$('#siteStorageStatus');
   const status=$('#storageStatusText');
   const rev=$('#storageRevision');
   const updated=$('#storageUpdatedAt');
   if (!pill || !status || !rev || !updated) return;
 
+  const retryBtn=$('#retryStorageBtn');
+  const reloadBtn=$('#reloadSiteStateBtn');
+  if (retryBtn) retryBtn.hidden=!errorText || storageConflict;
+  if (reloadBtn) reloadBtn.hidden=!storageConflict;
+
   if (errorText) {
-    pill.textContent='Site storage: attention';
+    pill.textContent=storageConflict?'Site storage: conflict':'Site storage: attention';
     pill.className='status-pill status-warn';
     status.textContent=errorText;
   } else {
@@ -588,7 +594,7 @@ function renderYahooStatus() {
     panel.textContent = 'Connected · read sync ready';
     panel.className = 'status-pill good';
     connect.hidden = true; sync.hidden = false; disconnect.hidden = false; headerSync.hidden = false;
-    text.textContent = 'Yahoo is connected. Syncing reads your fantasy team and available-player data into the local analysis model.';
+    text.textContent = 'Yahoo is connected. Syncing reads your fantasy team and available-player data into the stored Situation Room model.';
   }
   $('#writeAccessText').textContent = yahooStatus.writeEnabled
     ? 'Feature flag is enabled, but this v2 alpha still exposes no write endpoints. Yahoo approval must be confirmed first.'
@@ -600,8 +606,15 @@ function renderYahooStatus() {
   $('#rosterDateValue').textContent = state.yahoo.rosterDate || '—';
   $('#yahooRedirectUri').textContent = yahooStatus.redirectUri || 'Will be assigned when Yahoo OAuth is added to the Site';
   $('#yahooMissingConfig').textContent = yahooStatus.configured ? 'Configured' : 'Yahoo app setup is the next phase';
-  $('#yahooPoolSummary').textContent = state.waivers.length
-    ? `${state.waivers.length} available players in local pool`
+  const searchBtn=$('#searchYahooPlayersBtn');
+  const searchInput=$('#yahooPlayerSearch');
+  const positionInput=$('#yahooPositionSearch');
+  const yahooSearchReady=Boolean(yahooStatus.connected);
+  if (searchBtn) searchBtn.disabled=!yahooSearchReady;
+  if (searchInput) searchInput.disabled=!yahooSearchReady;
+  if (positionInput) positionInput.disabled=!yahooSearchReady;
+  $('#waiverPoolSummary').textContent = state.waivers.length
+    ? `${state.waivers.length} available players in stored Yahoo/manual pool`
     : 'No Yahoo player pool loaded yet';
 }
 
@@ -716,15 +729,19 @@ function renderKPIs() {
   $('#kpiPriority').textContent = `#${league.waiverPriority}`;
   $('#kpiRoster').textContent = `${counts.activeBench} / ${ACTIVE_BENCH_CAPACITY}`;
   $('#kpiReserve').textContent = `${counts.reserve} reserve`;
-  $('#kpiUsable').textContent = state.scheduleFetchedAt ? w.usableGames.toFixed(1) : '—';
-  $('#kpiPoints').textContent = state.scheduleFetchedAt ? w.points.toFixed(1) : '—';
-  $('#kpiLeakage').textContent = state.scheduleFetchedAt ? w.leakage.toFixed(1) : '—';
+  const scheduleReady=hasScheduleWindow(state.schedule,state.selectedDate);
+  $('#kpiUsable').textContent = scheduleReady ? w.usableGames.toFixed(1) : '—';
+  $('#kpiPoints').textContent = scheduleReady ? w.points.toFixed(1) : '—';
+  $('#kpiLeakage').textContent = scheduleReady ? w.leakage.toFixed(1) : '—';
 }
 
 function renderScheduleStatus() {
-  $('#scheduleStatus').textContent = state.scheduleFetchedAt
+  const ready=hasScheduleWindow(state.schedule,state.selectedDate);
+  $('#scheduleStatus').textContent = ready && state.scheduleFetchedAt
     ? 'NHL schedule: ' + new Date(state.scheduleFetchedAt).toLocaleString([], {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})
-    : 'NHL schedule: not loaded';
+    : state.scheduleFetchedAt
+      ? 'NHL schedule: refresh selected week'
+      : 'NHL schedule: not loaded';
 }
 
 function renderToday() {
@@ -820,7 +837,7 @@ function renderWaivers() {
     body.innerHTML='<tr><td colspan="12" class="muted">No waiver candidates match the current pool/filter.</td></tr>';
     return;
   }
-  const scheduleReady=Boolean(state.scheduleFetchedAt);
+  const scheduleReady=hasScheduleWindow(state.schedule,state.selectedDate);
   rows.forEach((x,i)=>{
     const c=x.candidate,a=x.analysis;
     const projectionReady=hasProjection(c);
@@ -861,8 +878,8 @@ function stageCandidate(id) {
     alert('The weekly acquisition limit is already reached. No local move will be staged.');
     return;
   }
-  if (!state.scheduleFetchedAt) {
-    alert('Load the NHL schedule before evaluating a waiver move.');
+  if (!hasScheduleWindow(state.schedule,state.selectedDate)) {
+    alert('Load the NHL schedule for the selected 7-day window before evaluating a waiver move.');
     return;
   }
   const c=state.waivers.find(x=>x.id===id);
