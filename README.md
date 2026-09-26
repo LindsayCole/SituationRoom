@@ -1,4 +1,4 @@
-# Dead Puck Society — Situation Room v2.2 alpha
+# Dead Puck Society — Situation Room v2.2.1 alpha
 
 A persistent season-long fantasy hockey command center built for **ChatGPT Sites**.
 
@@ -42,7 +42,7 @@ One current application snapshot per signed-in Site user:
 - weekly move count
 - planner date
 - goalie start probabilities
-- local analysis settings
+- Situation Room analysis settings
 
 Every successful write increments a numeric revision.
 
@@ -84,7 +84,7 @@ The server writes the new snapshot and corresponding change record together.
 
 If another session has already advanced the revision, the API returns a conflict instead of silently overwriting newer data.
 
-If a Site save fails, the browser keeps an emergency recovery copy locally. That recovery copy is not considered authoritative application storage.
+If a Site save fails, pending writes remain in an ordered queue and the browser keeps an emergency recovery copy. On reload, recovery is replayed only when it is safe to do so. If the Site has advanced to a newer revision, the recovered view is preserved for export and the UI requires an explicit reload of authoritative Site state instead of silently overwriting it.
 
 ## Existing browser-state migration
 
@@ -94,7 +94,7 @@ On the first visit after deployment:
 2. If no D1 state exists, it looks for old v2/v1 browser state.
 3. Existing browser state is written into D1 as an explicit `migrate-browser-state` revision.
 4. The old browser state keys are removed after the Site save succeeds.
-5. If no old state exists, the standard seed becomes revision 1.
+5. If no old state exists, an **empty roster/waiver seed** becomes revision 1. The application does not invent starter players or teams.
 
 This only helps when the new deployment shares browser origin/storage with the previous Site. JSON backup import remains available for other migrations.
 
@@ -127,7 +127,7 @@ The persistence layer is already designed for it:
 5. Sync metadata is written to `situation_room_sync_runs`.
 6. Manual projections and protected-player choices can be preserved across Yahoo refreshes instead of being destroyed by a provider sync.
 
-The current Site exposes a safe Yahoo status placeholder until that application/OAuth phase is configured.
+The current Site exposes a safe Yahoo status placeholder until that application/OAuth phase is configured. Dormant Yahoo routes return an explicit `501 YAHOO_NOT_CONFIGURED`; no Yahoo button is allowed to masquerade as a working integration.
 
 ## NHL schedule
 
@@ -137,7 +137,7 @@ The Site worker proxies the public NHL schedule endpoint through:
 GET /api/nhl/schedule?date=YYYY-MM-DD
 ```
 
-A successful refresh is persisted as an `nhl / schedule-refresh` revision.
+A successful refresh is persisted as an `nhl / schedule-refresh` revision. Seven-day analysis is enabled only when all seven requested dates are confirmed by the NHL response. Missing dates are fetched individually; if coverage is still incomplete, the stored schedule is left unchanged.
 
 ## Persistent API
 
@@ -150,7 +150,22 @@ A successful refresh is persisted as an `nhl / schedule-refresh` revision.
 - `GET /api/nhl/schedule?date=YYYY-MM-DD`
 - `GET /api/yahoo/status` (placeholder until Yahoo phase)
 
-API responses containing user state are marked `Cache-Control: no-store`.
+API responses containing user state are marked `Cache-Control: no-store`. Static Site responses also receive CSP, clickjacking, referrer, MIME-sniffing and permissions-policy protections.
+
+## Data-quality rules
+
+- Unknown values remain unknown. Missing FPPG is stored with `projectionSource: unset`, not treated as a real zero.
+- Net waiver/add-drop value is not calculated until the active/bench roster has complete projections.
+- Projected-points and leakage KPIs are withheld when roster projections are incomplete.
+- A goalie team game is not a goalie start unless a start probability is supplied.
+- A selected seven-day period is not considered schedule-ready until all seven dates are confirmed.
+- The ChatGPT Situation Brief exports unknown projections/totals as `null`, not `0`.
+
+## Validation
+
+CI checks TypeScript, browser JavaScript syntax, deterministic optimizer/data-quality tests, frontend/HTML selector contracts, persistence contracts, and a full ChatGPT Sites production build. GitGuardian also scans the branch for committed secrets.
+
+Actual deployed-Site D1 behavior and live Yahoo XML cannot be end-to-end validated until the Site is deployed and the Yahoo application is configured.
 
 ## Build requirements
 
@@ -193,6 +208,20 @@ ChatGPT Sites is currently a public-beta feature. OpenAI documents that deployed
 - Continual rolling waiver list
 - Daily - Today lineup changes
 - 2-day waiver time
+
+## Intentionally unfinished
+
+These are planned next-phase items rather than hidden defects:
+
+- ChatGPT Sites production deployment and deployed D1 smoke test.
+- Live Yahoo OAuth / Site-secret configuration.
+- Live Yahoo XML capture and parser fixtures.
+- Automatic weekly acquisition counting from Yahoo transactions.
+- Automatic projection/FPPG provider.
+- Confirmed/probable goalie-start provider.
+- Matchup/standings context.
+- Official Yahoo Fantasy branding before any public deployment.
+- Yahoo write operations only if/when Yahoo explicitly approves the required access.
 
 ## Next phase
 
