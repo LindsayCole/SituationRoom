@@ -100,3 +100,20 @@ test('schedule readiness requires the complete requested window',()=>{
   delete partial['2026-10-04'];
   assert.equal(hasScheduleWindow(partial,'2026-10-01'),false);
 });
+
+
+test('candidate analysis refuses to value a drop against an unprojected roster',()=>{
+  const state={
+    selectedDate:'2026-10-01',
+    schedule,
+    roster:[
+      p('1','Known','AAA',['C'],4,{projectionSource:'manual'}),
+      p('2','Unknown','BBB',['LW'],0,{projectionSource:'unset'})
+    ]
+  };
+  const candidate=p('c','Candidate','CCC',['C'],5,{projectionSource:'manual'});
+  const a=analyzeCandidate(candidate,state);
+  assert.equal(a.rosterProjectionMissing,true);
+  assert.equal(Number.isFinite(a.delta),false);
+  assert.equal(a.notActionable,true);
+});
