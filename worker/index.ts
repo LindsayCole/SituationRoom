@@ -112,8 +112,8 @@ app.get("/api/state", async (context) => {
 
 app.put("/api/state", async (context) => {
   const input = (await context.req.json().catch(() => null)) as StateWriteInput | null;
-  if (!input || input.state === undefined) {
-    return context.json({ error: "A state payload is required." }, 400);
+  if (!input || !isRecord(input.state)) {
+    return context.json({ error: "A Situation Room state object is required." }, 400);
   }
 
   const serializedState = JSON.stringify(input.state);
@@ -129,31 +129,7 @@ app.put("/api/state", async (context) => {
   await ensureSchema(context.env.DB);
   const ownerId = context.get("user").userId;
   const now = new Date().toISOString();
-  const current = await context.env.DB.prepare(
-    `SELECT owner_id, state_json, revision, created_at, updated_at
-     FROM situation_room_state
-     WHERE owner_id = ?`,
-  )
-    .bind(ownerId)
-    .first<StateRow>();
-
-  const currentRevision = current?.revision ?? 0;
-  if (currentRevision !== baseRevision) {
-    return context.json(
-      {
-        error: "Situation Room state changed in another session.",
-        conflict: true,
-        revision: currentRevision,
-        state: current ? safeParseJson(current.state_json) : null,
-        updatedAt: current?.updated_at ?? null,
-      },
-      409,
-    );
-  }
-
-  const nextRevision = currentRevision + 1;
   const change = input.change ?? {};
-  const changeId = crypto.randomUUID();
   const source = cleanLabel(change.source, "manual", 40);
   const action = cleanLabel(change.action, "state-update", 80);
   const entityType = cleanNullable(change.entityType, 80);
@@ -162,6 +138,48 @@ app.put("/api/state", async (context) => {
   const beforeJson = encodeOptional(change.before);
   const afterJson = encodeOptional(change.after);
   const metadataJson = encodeOptional(change.metadata);
+
+  if (clientChangeId) {
+    const duplicate = await context.env.DB.prepare(
+      `SELECT id, revision, created_at
+       FROM situation_room_changes
+       WHERE owner_id = ? AND client_change_id = ?`,
+    )
+      .bind(ownerId, clientChangeId)
+      .first<{ id: string; revision: number; created_at: string }>();
+
+    if (duplicate) {
+      const current = await readStateRow(context.env.DB, ownerId);
+      if (current && current.revision === duplicate.revision) {
+        return context.json({
+          ok: true,
+          duplicate: true,
+          revision: current.revision,
+          updatedAt: current.updated_at,
+          changeId: duplicate.id,
+        });
+      }
+      return conflictResponse(
+        context,
+        current,
+        "This save was already applied, but newer Site state now exists.",
+        { duplicate: true, duplicateRevision: duplicate.revision },
+      );
+    }
+  }
+
+  const current = await readStateRow(context.env.DB, ownerId);
+  const currentRevision = current?.revision ?? 0;
+  if (currentRevision !== baseRevision) {
+    return conflictResponse(
+      context,
+      current,
+      "Situation Room state changed in another session.",
+    );
+  }
+
+  const nextRevision = currentRevision + 1;
+  const changeId = crypto.randomUUID();
 
   const writeState = current
     ? context.env.DB.prepare(
@@ -198,32 +216,50 @@ app.put("/api/state", async (context) => {
   try {
     const results = await context.env.DB.batch([writeState, writeChange]);
     const stateWrite = results[0];
-    if (current && !stateWrite.meta.changes) {
-      return context.json(
-        {
-          error: "Situation Room state changed during save.",
-          conflict: true,
-        },
-        409,
+    if (!stateWrite.success || (current && !stateWrite.meta.changes)) {
+      const latest = await readStateRow(context.env.DB, ownerId);
+      return conflictResponse(
+        context,
+        latest,
+        "Situation Room state changed during save.",
       );
     }
   } catch (error) {
-    if (clientChangeId && isUniqueConstraint(error)) {
-      const existing = await context.env.DB.prepare(
-        `SELECT revision, created_at
-         FROM situation_room_changes
-         WHERE owner_id = ? AND client_change_id = ?`,
-      )
-        .bind(ownerId, clientChangeId)
-        .first<{ revision: number; created_at: string }>();
-      if (existing) {
-        return context.json({
-          ok: true,
-          duplicate: true,
-          revision: existing.revision,
-          updatedAt: existing.created_at,
-        });
+    if (isUniqueConstraint(error)) {
+      if (clientChangeId) {
+        const duplicate = await context.env.DB.prepare(
+          `SELECT id, revision, created_at
+           FROM situation_room_changes
+           WHERE owner_id = ? AND client_change_id = ?`,
+        )
+          .bind(ownerId, clientChangeId)
+          .first<{ id: string; revision: number; created_at: string }>();
+        if (duplicate) {
+          const latest = await readStateRow(context.env.DB, ownerId);
+          if (latest && latest.revision === duplicate.revision) {
+            return context.json({
+              ok: true,
+              duplicate: true,
+              revision: latest.revision,
+              updatedAt: latest.updated_at,
+              changeId: duplicate.id,
+            });
+          }
+          return conflictResponse(
+            context,
+            latest,
+            "This save was already applied, but newer Site state now exists.",
+            { duplicate: true, duplicateRevision: duplicate.revision },
+          );
+        }
       }
+
+      const latest = await readStateRow(context.env.DB, ownerId);
+      return conflictResponse(
+        context,
+        latest,
+        "Situation Room state changed during save.",
+      );
     }
     throw error;
   }
@@ -338,6 +374,39 @@ app.onError((error, context) => {
   console.error("Situation Room API error", error);
   return context.json({ error: "Situation Room could not complete the request." }, 500);
 });
+
+async function readStateRow(database: D1Database, ownerId: string) {
+  return database.prepare(
+    `SELECT owner_id, state_json, revision, created_at, updated_at
+     FROM situation_room_state
+     WHERE owner_id = ?`,
+  )
+    .bind(ownerId)
+    .first<StateRow>();
+}
+
+function conflictResponse(
+  context: Parameters<typeof app.fetch>[1] extends never ? never : any,
+  current: StateRow | null,
+  message: string,
+  extra: Record<string, unknown> = {},
+) {
+  return context.json(
+    {
+      error: message,
+      conflict: true,
+      revision: current?.revision ?? 0,
+      state: current ? safeParseJson(current.state_json) : null,
+      updatedAt: current?.updated_at ?? null,
+      ...extra,
+    },
+    409,
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
 
 function cleanLabel(value: unknown, fallback: string, max: number): string {
   const text = String(value ?? "").trim().slice(0, max);
