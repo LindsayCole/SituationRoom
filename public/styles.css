@@ -202,6 +202,16 @@ input[readonly]{background:#0b1721;color:#b5c8d4;border-color:#1b3141}
   background:#102230;border:1px solid var(--line)
 }
 .player-avatar-placeholder{display:inline-flex;align-items:center;justify-content:center;font-size:16px}
+.section-heading{margin:24px 0 12px}
+.readiness-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.readiness-card{display:grid;gap:6px;text-align:left;background:#0b1925;border:1px solid var(--line);border-radius:11px;padding:12px;color:var(--text)}
+.readiness-card:hover{border-color:var(--accent)}
+.readiness-card span{color:var(--muted);font-size:11px;font-weight:750;text-transform:uppercase;letter-spacing:.06em}
+.readiness-card strong{font-size:14px}
+.league-roster-controls{display:flex;gap:12px;align-items:end;flex-wrap:wrap;margin-bottom:14px}
+.league-roster-controls label{display:grid;gap:5px;color:var(--muted);font-size:11px;font-weight:800}
+.league-roster-controls select{min-width:260px}
+.league-roster-controls input{min-width:220px}
 .status-badge{background:rgba(247,185,85,.12);color:#ffd98f}
 .input-tiny{max-width:76px}
 .visually-hidden{
@@ -214,4 +224,6 @@ input[readonly]{background:#0b1721;color:#b5c8d4;border-color:#1b3141}
   .search-separator{display:none}
   .player-search-bar{align-items:stretch}
   .player-search-bar .btn{width:100%}
+  .readiness-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .league-roster-controls label,.league-roster-controls select,.league-roster-controls input{width:100%;min-width:0}
 }

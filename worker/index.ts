@@ -412,6 +412,14 @@ app.get("/api/yahoo/roster", async (context) => {
     `/team/${teamKey}/roster;date=${date}/players;out=stats,percent_owned`);
 });
 
+app.get("/api/yahoo/league-teams", async (context) => {
+  const leagueKey = context.req.query("leagueKey") ?? "";
+  if (!validLeagueKey(leagueKey)) return context.json({ error: "Valid leagueKey is required." }, 400);
+  await ensureSchema(context.env.DB);
+  return fetchYahooXml(context.env, context.get("user").userId,
+    `/league/${leagueKey}/teams`);
+});
+
 app.get("/api/yahoo/available", async (context) => {
   const leagueKey = context.req.query("leagueKey") ?? "";
   if (!validLeagueKey(leagueKey)) return context.json({ error: "Valid leagueKey is required." }, 400);

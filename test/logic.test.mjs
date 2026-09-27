@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { analyzeCandidate, hasScheduleWindow, optimizeDay, parsePlayerLines, projectWeek } from '../public/logic.js';
+import { analyzeCandidate, hasScheduleWindow, mondayOf, optimizeDay, parsePlayerLines,
+  parseRosterSnapshotLines, playerAvailability, projectWeek } from '../public/logic.js';
 
 const schedule={
   '2026-10-01':{games:5,teams:['AAA','BBB','CCC','DDD']},
@@ -72,6 +73,28 @@ test('parsePlayerLines makes goalies unconfirmed by default',()=>{
   assert.equal(players[1].startProbability,0);
   assert.equal(players[0].projectionSource,'manual');
   assert.equal(players[1].projectionSource,'manual');
+});
+
+test('roster snapshot import preserves slots and reference points without inventing projections',()=>{
+  const {players,errors}=parseRosterSnapshotLines('Nick Suzuki | MTL | C | C | 377.50 | 100\nJeremy Swayman | BOS | G | G | 269.00 | 98');
+  assert.deepEqual(errors,[]);
+  assert.deepEqual(players.map(player=>player.selectedPosition),['C','G']);
+  assert.deepEqual(players.map(player=>player.referencePoints),[377.5,269]);
+  assert.deepEqual(players.map(player=>player.projectionSource),['unset','unset']);
+  assert.equal(players[1].startProbability,0);
+});
+
+test('known league owner overrides a candidate marked available',()=>{
+  const candidate={name:'Skater',team:'BOS',ownershipType:'freeagent'};
+  assert.deepEqual(playerAvailability(candidate,[],[{name:'Rival',players:[{name:'Skater',team:'BOS'}]}]),
+    {status:'rostered',owner:'Rival'});
+  assert.deepEqual(playerAvailability(candidate,[],[]),{status:'free-agent',owner:null});
+  assert.deepEqual(playerAvailability({name:'Unknown',team:'BOS'},[],[]),{status:'unverified',owner:null});
+});
+
+test('weekly move counter boundaries follow Monday',()=>{
+  assert.equal(mondayOf('2026-09-27'),'2026-09-21');
+  assert.equal(mondayOf('2026-09-28'),'2026-09-28');
 });
 
 test('week projection returns seven days',()=>{

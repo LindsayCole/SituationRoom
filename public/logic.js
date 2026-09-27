@@ -17,6 +17,12 @@ export function addDays(dateStr,n) {
   return isoDate(d);
 }
 
+export function mondayOf(dateStr) {
+  const d=new Date(`${dateStr}T12:00:00`);
+  d.setDate(d.getDate() - ((d.getDay()+6)%7));
+  return isoDate(d);
+}
+
 export function parsePositions(s) {
   return [...new Set(String(s||"").toUpperCase().split(/[\/,\s]+/).map(x=>x.trim()).filter(x=>["C","LW","RW","D","G"].includes(x)))];
 }
@@ -221,4 +227,58 @@ export function parsePlayerLines(text) {
     });
   }
   return out;
+}
+
+export function parseRosterSnapshotLines(text) {
+  const allowedSlots=new Set(['C','LW','RW','D','G','UTIL','BN','IR','IR+']);
+  const players=[];
+  const errors=[];
+  for (const [index,raw] of String(text||'').split(/\r?\n/).entries()) {
+    const line=raw.trim();
+    if (!line) continue;
+    const parts=(line.includes('|') ? line.split('|') : line.split(',')).map(value=>value.trim());
+    const [name,team,eligible,slot='BN',points='',owned='']=parts;
+    const positions=parsePositions(eligible);
+    const selectedPosition=slot.toUpperCase();
+    if (!name || !team || !positions.length || !allowedSlots.has(selectedPosition)) {
+      errors.push(index+1);
+      continue;
+    }
+    const referencePoints=points !== '' && Number.isFinite(Number(points)) ? Number(points) : null;
+    const percentOwned=owned !== '' && Number.isFinite(Number(owned))
+      ? Math.max(0,Math.min(100,Number(owned))) : null;
+    players.push({
+      id:makeUuid(),name,team:team.toUpperCase(),positions,selectedPosition,
+      status:'',source:'manual-snapshot',fppg:0,projectionSource:'unset',
+      projectionUpdatedAt:null,core:false,manualCanDrop:true,canDrop:true,
+      startProbability:positions.includes('G') ? 0 : 1,
+      referencePoints,referenceLabel:referencePoints===null ? null : 'Roster screenshot',percentOwned
+    });
+  }
+  return {players,errors};
+}
+
+export function playerIdentity(player) {
+  return player?.yahooPlayerKey
+    ? `key:${player.yahooPlayerKey}`
+    : `name:${String(player?.name||'').trim().toLocaleLowerCase()}|${String(player?.team||'').trim().toUpperCase()}`;
+}
+
+export function playerMatches(a,b) {
+  if (a?.yahooPlayerKey && b?.yahooPlayerKey) return a.yahooPlayerKey===b.yahooPlayerKey;
+  return String(a?.name||'').trim().toLocaleLowerCase()===String(b?.name||'').trim().toLocaleLowerCase()
+    && String(a?.team||'').trim().toUpperCase()===String(b?.team||'').trim().toUpperCase();
+}
+
+export function playerAvailability(player,roster,leagueRosters) {
+  if ((roster||[]).some(other=>playerMatches(player,other))) return {status:'rostered',owner:'Your team'};
+  for (const team of leagueRosters||[]) {
+    if ((team.players||[]).some(other=>playerMatches(player,other)))
+      return {status:'rostered',owner:team.name};
+  }
+  const type=String(player?.ownershipType||'').toLowerCase();
+  if (type.includes('waiver') || type==='w') return {status:'waivers',owner:null};
+  if (type.includes('free') || type==='fa' || type==='a') return {status:'free-agent',owner:null};
+  if (type==='available') return {status:'available',owner:null};
+  return {status:'unverified',owner:null};
 }
