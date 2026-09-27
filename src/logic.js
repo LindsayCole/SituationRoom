@@ -270,13 +270,18 @@ export function playerMatches(a,b) {
     && String(a?.team||'').trim().toUpperCase()===String(b?.team||'').trim().toUpperCase();
 }
 
-export function playerAvailability(player,roster,leagueRosters) {
+export function playerAvailability(player,roster,leagueRosters,now=Date.now()) {
   if ((roster||[]).some(other=>playerMatches(player,other))) return {status:'rostered',owner:'Your team'};
   for (const team of leagueRosters||[]) {
     if ((team.players||[]).some(other=>playerMatches(player,other)))
       return {status:'rostered',owner:team.name};
   }
   const type=String(player?.ownershipType||'').toLowerCase();
+  if (String(player?.source||'').toLowerCase()==='manual' && type) {
+    const verifiedAt=Date.parse(player?.ownershipVerifiedAt||'');
+    if (!Number.isFinite(verifiedAt) || verifiedAt>now+5*60*1000 || now-verifiedAt>24*60*60*1000)
+      return {status:'unverified',owner:null};
+  }
   if (type.includes('waiver') || type==='w') return {status:'waivers',owner:null};
   if (type.includes('free') || type==='fa' || type==='a') return {status:'free-agent',owner:null};
   if (type==='available') return {status:'available',owner:null};
