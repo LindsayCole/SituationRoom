@@ -20,7 +20,7 @@ import {
   parsePositions,
   playerAvailability,
   projectWeek
-} from './logic.js';
+} from './logic.js?v=7';
 
 const STORAGE_KEY = 'deadPuckSituationRoom_v2';
 const LEGACY_STORAGE_KEY = 'deadPuckSituationRoom_v1';
