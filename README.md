@@ -36,10 +36,12 @@ One current application snapshot per signed-in Site user:
 
 - roster
 - waiver/player pool
+- other league-team rosters with their source and last update
 - projections
 - Yahoo roster metadata
 - NHL schedule cache
 - weekly move count
+- week to which the manual move count applies
 - planner date
 - goalie start probabilities
 - Situation Room analysis settings
@@ -105,6 +107,8 @@ Manual changes are first-class persistent changes. Current UI actions already wr
 - roster player edits
 - roster add/remove
 - bulk roster import
+- individual opponent-team roster imports
+- league-wide opponent roster refresh when Yahoo Fantasy API access is active
 - waiver candidate import/clear
 - waiver projection edits
 - locally staged add/drop analysis
@@ -117,6 +121,10 @@ Manual changes are first-class persistent changes. Current UI actions already wr
 ## Yahoo connection
 
 The Site worker handles Yahoo's authorization code flow and read-only Fantasy API requests. It encrypts each user's access and refresh tokens with AES-GCM before storing them in D1. The client secret and encryption key stay in Site secrets. The browser receives neither the client secret nor the refresh token.
+
+The **League Rosters** screen can load all other teams through Yahoo's league teams and team roster resources. It stores their rosters with update time and source. Manual imports of a selected team remain available while Yahoo access is pending. A player appearing on a tracked roster is marked rostered in Waiver Command. An absent player is still unverified unless Yahoo's available-player query or a user confirmation establishes availability.
+
+Bulk imports of your roster preserve lineup slots. Optional screenshot fantasy points are stored as reference points, separate from current-season Yahoo points and FPPG projections. The weekly acquisition counter displays zero after the local Monday boundary until updated for the new week.
 
 Configure these four hosted runtime values in Sites:
 
@@ -151,6 +159,7 @@ A successful refresh is persisted as an `nhl / schedule-refresh` revision. Seven
 - `GET /api/yahoo/status`, `/api/yahoo/login`, `/api/yahoo/callback`
 - `POST /api/yahoo/disconnect`, `/api/yahoo/sync-failure`
 - `GET /api/yahoo/teams`, `/api/yahoo/roster`, `/api/yahoo/available`, `/api/yahoo/transactions`, `/api/yahoo/league`
+- `GET /api/yahoo/league-teams`
 
 API responses containing user state are marked `Cache-Control: no-store`. Static Site responses also receive CSP, clickjacking, referrer, MIME-sniffing and permissions-policy protections.
 
