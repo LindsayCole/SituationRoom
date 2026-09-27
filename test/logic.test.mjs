@@ -92,6 +92,17 @@ test('known league owner overrides a candidate marked available',()=>{
   assert.deepEqual(playerAvailability({name:'Unknown',team:'BOS'},[],[]),{status:'unverified',owner:null});
 });
 
+test('manual availability expires after one day and known owners still win',()=>{
+  const now=Date.parse('2026-09-29T12:00:00Z');
+  const candidate={name:'Skater',team:'BOS',source:'manual',ownershipType:'freeagent',
+    ownershipVerifiedAt:'2026-09-28T12:00:01Z'};
+  assert.deepEqual(playerAvailability(candidate,[],[],now),{status:'free-agent',owner:null});
+  candidate.ownershipVerifiedAt='2026-09-28T11:59:59Z';
+  assert.deepEqual(playerAvailability(candidate,[],[],now),{status:'unverified',owner:null});
+  assert.deepEqual(playerAvailability(candidate,[],[{name:'Rival',players:[{name:'Skater',team:'BOS'}]}],now),
+    {status:'rostered',owner:'Rival'});
+});
+
 test('weekly move counter boundaries follow Monday',()=>{
   assert.equal(mondayOf('2026-09-27'),'2026-09-21');
   assert.equal(mondayOf('2026-09-28'),'2026-09-28');

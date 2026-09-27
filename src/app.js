@@ -30,6 +30,7 @@ const league = {
   id: 46311,
   name: 'Blades of Glory Tokyo Drift',
   teamName: 'Dead Puck Society',
+  firstScoringDate: '2026-09-29',
   teams: 12,
   scoringType: 'Head-to-Head - Points',
   maxAddsPerWeek: 5,
@@ -61,6 +62,11 @@ const league = {
   ]
 };
 
+function defaultPlannerDate() {
+  const today=isoDate(new Date());
+  return today<league.firstScoringDate ? league.firstScoringDate : today;
+}
+
 const seedState = {
   roster: [],
   waivers: [],
@@ -69,7 +75,7 @@ const seedState = {
   movesWeekStart: mondayOf(isoDate(new Date())),
   schedule: {},
   scheduleFetchedAt: null,
-  selectedDate: isoDate(new Date()),
+  selectedDate: defaultPlannerDate(),
   yahoo: {
     teamKey: null,
     leagueKey: null,
@@ -231,7 +237,7 @@ function normalizeState(parsed) {
     movesWeekStart:isValidIsoDate(source.movesWeekStart)?source.movesWeekStart:mondayOf(isoDate(new Date())),
     schedule:normalizeSchedule(source.schedule),
     scheduleFetchedAt:validTimestampOrNull(source.scheduleFetchedAt),
-    selectedDate:isValidIsoDate(source.selectedDate)?source.selectedDate:isoDate(new Date()),
+    selectedDate:isValidIsoDate(source.selectedDate)?source.selectedDate:defaultPlannerDate(),
     yahoo:{
       ...clone(seedState.yahoo),
       ...rawYahoo,
@@ -1155,7 +1161,7 @@ function renderWaivers() {
       <td>${esc((c.positions||[]).join('/'))}</td>
       <td>${c.source==='manual' && availability.status!=='rostered'
         ? `<select class="w-availability" data-id="${esc(c.id)}" aria-label="Availability for ${esc(c.name)}"><option value="" ${availability.status==='unverified'?'selected':''}>Unverified</option><option value="freeagent" ${availability.status==='free-agent'?'selected':''}>Free agent</option><option value="waivers" ${availability.status==='waivers'?'selected':''}>Waivers</option></select>`
-        : `<strong>${esc(availability.owner || (availability.status==='free-agent'?'Free agent':availability.status==='waivers'?'Waivers':availability.status==='available'?'Available · Yahoo':'Unverified'))}</strong>`}</td>
+        : `<strong>${esc(availability.owner || (availability.status==='free-agent'?'Free agent':availability.status==='waivers'?'Waivers':availability.status==='available'?'Available · Yahoo':'Unverified'))}</strong>`}${c.source==='manual' && c.ownershipVerifiedAt ? `<div class="mini-note">${availability.status==='unverified'?'Yahoo check expired · verify again':`Checked ${esc(fmtWhen(c.ownershipVerifiedAt))} · valid 24h`}</div>` : ''}</td>
       <td>${statusBadge(c)}</td>
       <td>${owned}</td>
       <td><input class="w-fppg input-small" data-id="${esc(c.id)}" type="number" step="0.01" min="-20" max="30" value="${esc(projectionInputValue(c))}" /><div class="mini-note">${esc(projectionLabel(c))}</div></td>
@@ -1417,7 +1423,7 @@ $('#seasonReadiness').addEventListener('click',e=>{
   const button=e.target.closest('[data-open-tab]');
   if (button) openTab(button.dataset.openTab);
 });
-$('#todayDate').addEventListener('change',e=>{state.selectedDate=e.target.value||isoDate(new Date());saveState({source:'manual',action:'planner-date-change',after:{selectedDate:state.selectedDate}});renderAll();});
+$('#todayDate').addEventListener('change',e=>{state.selectedDate=e.target.value||defaultPlannerDate();saveState({source:'manual',action:'planner-date-change',after:{selectedDate:state.selectedDate}});renderAll();});
 $('#optimizeTodayBtn').addEventListener('click',renderToday);
 $('#refreshScheduleBtn').addEventListener('click',refreshSchedule);
 $('#connectYahooBtn').addEventListener('click',()=>{if(!yahooStatus.configured){alert('Yahoo integration is not configured yet.');return;}window.location.href='/api/yahoo/login';});

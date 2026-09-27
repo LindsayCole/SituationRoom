@@ -124,6 +124,8 @@ The Site worker handles Yahoo's authorization code flow and read-only Fantasy AP
 
 The **League Rosters** screen can load all other teams through Yahoo's league teams and team roster resources. It stores their rosters with update time and source. Manual imports of a selected team remain available while Yahoo access is pending. A player appearing on a tracked roster is marked rostered in Waiver Command. An absent player is still unverified unless Yahoo's available-player query or a user confirmation establishes availability.
 
+A manually confirmed free-agent or waiver status expires after 24 hours and must be checked against Yahoo again before staging a move. The first 2026–27 scoring matchup starts September 29, so a fresh planner starts on that date when opened earlier in the preseason.
+
 Bulk imports of your roster preserve lineup slots. Optional screenshot fantasy points are stored as reference points, separate from current-season Yahoo points and FPPG projections. The weekly acquisition counter displays zero after the local Monday boundary until updated for the new week.
 
 Configure these four hosted runtime values in Sites:
