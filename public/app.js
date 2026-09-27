@@ -251,6 +251,7 @@ let stateUpdatedAt = null;
 let pendingSaves = [];
 let saveDrainPromise = null;
 let historyRows = [];
+let syncRows = [];
 let yahooStatus = { configured:false, connected:false, writeEnabled:false, readOnlyDefault:true };
 let storageError = '';
 let storageConflict = false;
@@ -285,7 +286,8 @@ function persistRecoveryCopy(failedAt=null) {
     before:entry.change.before,
     after:entry.change.after,
     metadata:entry.change.metadata,
-    clientChangeId:entry.change.clientChangeId
+    clientChangeId:entry.change.clientChangeId,
+    snapshot:entry.snapshot
   }));
   try {
     localStorage.setItem(PENDING_RECOVERY_KEY,JSON.stringify({
@@ -375,9 +377,8 @@ async function replayRecovery(recovery, hasStoredState) {
   }
 
   state=desired;
-  const snapshot=clone(state);
   for (const change of changes.slice(applied)) {
-    pendingSaves.push(makeSaveEntry(change,snapshot));
+    pendingSaves.push(makeSaveEntry(change,normalizeState(change.snapshot || desired)));
   }
   persistRecoveryCopy(recovery.failedAt || null);
   $('#saveStatus').textContent='Replaying recovered saves…';
@@ -455,7 +456,7 @@ function drainSaveQueue() {
         pendingSaves.shift();
         storageError='';
         storageConflict=false;
-        historyRows.unshift({
+        if (!result.duplicate) historyRows.unshift({
           id:result.changeId || entry.change.clientChangeId,
           revision:stateRevision,
           source:entry.change.source,
@@ -718,8 +719,11 @@ async function refreshSchedule() {
 
 async function loadHistory() {
   try {
-    const data = await fetchJson('/api/changes?limit=100');
-    historyRows = Array.isArray(data.changes) ? data.changes : [];
+    const [changes,syncRuns] = await Promise.all([
+      fetchJson('/api/changes?limit=100'),fetchJson('/api/sync-runs')
+    ]);
+    historyRows = Array.isArray(changes.changes) ? changes.changes : [];
+    syncRows = Array.isArray(syncRuns.syncRuns) ? syncRuns.syncRuns : [];
   } catch (err) {
     console.warn('Change history could not be loaded.',err);
   }
@@ -742,6 +746,10 @@ function renderPersistenceStatus(errorText=storageError) {
     pill.textContent=storageConflict?'Site storage: conflict':'Site storage: attention';
     pill.className='status-pill status-warn';
     status.textContent=errorText;
+  } else if (pendingSaves.length || readPendingRecovery()) {
+    pill.textContent='Site storage: unsaved edits';
+    pill.className='status-pill status-warn';
+    status.textContent='Recovery copies are waiting on this device. Review them before discarding.';
   } else {
     pill.textContent=`Site storage: saved · r${stateRevision}`;
     pill.className='status-pill good';
@@ -753,6 +761,12 @@ function renderPersistenceStatus(errorText=storageError) {
 
 function renderHistory() {
   const body=$('#historyTable');
+  const syncBody=$('#syncHistoryTable');
+  if (syncBody) {
+    syncBody.innerHTML=syncRows.length
+      ? syncRows.map(row=>`<tr><td>${esc(fmtWhen(row.completedAt||row.startedAt))}</td><td>${esc(row.status)}</td><td>${esc(row.error || JSON.stringify(row.summary||{}))}</td></tr>`).join('')
+      : '<tr><td colspan="3" class="muted">No Yahoo sync attempts yet.</td></tr>';
+  }
   if (!body) return;
   body.innerHTML='';
   if (!historyRows.length) {
@@ -814,8 +828,8 @@ function renderYahooStatus() {
   $('#leagueKeyValue').textContent = state.yahoo.leagueKey || '—';
   $('#rosterSourceValue').textContent = state.yahoo.rosterSource || 'local';
   $('#rosterDateValue').textContent = state.yahoo.rosterDate || '—';
-  $('#yahooRedirectUri').textContent = yahooStatus.redirectUri || 'Will be assigned when Yahoo OAuth is added to the Site';
-  $('#yahooMissingConfig').textContent = yahooStatus.configured ? 'Configured' : 'Yahoo app setup is the next phase';
+  $('#yahooRedirectUri').textContent = yahooStatus.redirectUri || 'Set YAHOO_REDIRECT_URI in Site settings';
+  $('#yahooMissingConfig').textContent = yahooStatus.configured ? 'Configured' : yahooStatus.missingConfig?.join(', ') || 'Yahoo Site settings missing';
   const searchBtn=$('#searchYahooPlayersBtn');
   const searchInput=$('#yahooPlayerSearch');
   const positionInput=$('#yahooPositionSearch');
@@ -840,15 +854,13 @@ async function syncYahoo() {
     const team = teams.find(t=>t.teamKey.includes(leagueFragment)) || teams.find(t=>t.name.toLowerCase()===league.teamName.toLowerCase());
     if (!team) throw new Error(`Could not find ${league.teamName} in Yahoo league ${league.id}.`);
     const leagueKey = team.teamKey.split('.t.')[0];
-    state.yahoo.teamKey = team.teamKey;
-    state.yahoo.leagueKey = leagueKey;
 
     const rosterDate = isoDate(new Date());
     log.textContent = `Syncing current roster for ${rosterDate}…`;
     const rosterDoc = await fetchXml(`/api/yahoo/roster?teamKey=${encodeURIComponent(team.teamKey)}&date=${encodeURIComponent(rosterDate)}`);
     const rosterPlayers = parseYahooPlayers(rosterDoc,'yahoo-roster');
     if (!rosterPlayers.length) throw new Error('Yahoo roster response contained no players.');
-    state.roster = mergeYahooRoster(rosterPlayers);
+    const nextRoster = mergeYahooRoster(rosterPlayers);
 
     log.textContent = 'Loading available players…';
     const [availableDoc0, availableDoc50] = await Promise.all([
@@ -857,8 +869,12 @@ async function syncYahoo() {
     ]);
     const available = [...parseYahooPlayers(availableDoc0,'yahoo-available'), ...parseYahooPlayers(availableDoc50,'yahoo-available')];
     const seen = new Set();
-    state.waivers = replaceYahooWaiverPool(available.filter(p=>p.yahooPlayerKey && !seen.has(p.yahooPlayerKey) && seen.add(p.yahooPlayerKey)));
+    const nextWaivers = replaceYahooWaiverPool(available.filter(p=>p.yahooPlayerKey && !seen.has(p.yahooPlayerKey) && seen.add(p.yahooPlayerKey)));
 
+    state.roster = nextRoster;
+    state.waivers = nextWaivers;
+    state.yahoo.teamKey = team.teamKey;
+    state.yahoo.leagueKey = leagueKey;
     state.yahoo.lastSyncAt = new Date().toISOString();
     state.yahoo.rosterDate = rosterDate;
     state.yahoo.availableCount = state.waivers.length;
@@ -873,6 +889,9 @@ async function syncYahoo() {
   } catch (err) {
     log.className = 'action-banner warn';
     log.textContent = `Yahoo sync failed: ${err.message}`;
+    try { await fetchJson('/api/yahoo/sync-failure',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({error:err.message})}); }
+    catch (historyError) { console.warn('Yahoo failure could not be recorded.',historyError); }
+    await loadHistory();
     if (/not connected|401/i.test(err.message)) await loadYahooStatus();
   } finally {
     buttons.forEach((b,i)=>{b.disabled=false;b.textContent=i===0?'Sync now':'Sync Yahoo';});

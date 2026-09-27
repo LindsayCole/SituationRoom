@@ -26,9 +26,8 @@
 
     <section class="notice" id="seedNotice">
       <strong>Persistent ChatGPT Site storage is now the source of truth.</strong>
-      Roster edits, projections, manual imports, schedule refreshes and future Yahoo syncs are saved as durable revisions with change history. Yahoo transactions remain disabled.
+      Roster edits, projections, manual imports, schedule refreshes and Yahoo syncs are saved as durable revisions with change history. Yahoo transactions remain disabled.
     </section>
-
     <section class="kpi-grid">
       <article class="kpi"><span>Moves left this week</span><strong id="kpiMoves">5 / 5</strong><small>Manual until transaction-week parsing lands</small></article>
       <article class="kpi"><span>Waiver priority</span><strong id="kpiPriority">#6</strong><small>Snapshot until Yahoo sync updates it</small></article>
@@ -125,7 +124,7 @@
           <article class="card">
             <h3>Yahoo application integration</h3>
             <dl class="kv-list"><div><dt>Site secret status</dt><dd id="yahooMissingConfig">Checking…</dd></div><div><dt>OAuth callback</dt><dd><code id="yahooRedirectUri">Pending Yahoo phase</code></dd></div></dl>
-            <div class="mini-note">Yahoo credentials will be configured as ChatGPT Site secrets. They will not be stored in browser data or committed to GitHub.</div>
+            <div class="mini-note">Configure Yahoo credentials as ChatGPT Site secrets. They are not stored in browser data or committed to GitHub.</div>
           </article>
         </div>
         <div class="action-banner" id="yahooSyncLog">Yahoo sync has not run yet.</div>
@@ -154,7 +153,7 @@
             <ul class="clean-list">
               <li>Every saved state receives a monotonically increasing revision.</li>
               <li>Each revision also writes an append-only change record.</li>
-              <li>Manual changes and future Yahoo syncs use the same store.</li>
+              <li>Manual changes and Yahoo syncs use the same store.</li>
               <li>Two stale browser sessions cannot silently overwrite one another.</li>
               <li>Browser storage is used only as emergency recovery if a Site save fails.</li>
             </ul>
@@ -167,6 +166,11 @@
             <tbody id="historyTable"></tbody>
           </table>
         </div>
+        <h3>Yahoo sync attempts</h3>
+        <div class="table-wrap"><table class="wide-table">
+          <thead><tr><th>Time</th><th>Result</th><th>Summary</th></tr></thead>
+          <tbody id="syncHistoryTable"></tbody>
+        </table></div>
       </section>
 
       <section class="panel tab-panel" id="panel-league">
@@ -194,7 +198,7 @@
       </section>
     </main>
 
-    <footer><span>Dead Puck Society Situation Room · v2.2.1 alpha</span><span id="saveStatus">Loading Site storage…</span></footer>
+    <footer><span>Dead Puck Society Situation Room · v2.3 alpha</span><span id="saveStatus">Loading Site storage…</span></footer>
   </div>
   <script type="module" src="/app.js"></script>
 </body>

@@ -1,8 +1,8 @@
-# Dead Puck Society — Situation Room v2.2.1 alpha
+# Dead Puck Society — Situation Room v2.3 alpha
 
 A persistent season-long fantasy hockey command center built for **ChatGPT Sites**.
 
-The source of truth is now a Sites-managed D1 database. Browser localStorage is not used as the application database. Manual changes, future Yahoo syncs, schedule refreshes and analysis settings all flow through the same durable state API.
+The source of truth is a Sites-managed D1 database. Browser localStorage holds only unsaved recovery copies and one-time migration data. Manual changes, Yahoo syncs, schedule refreshes and analysis settings flow through the durable state API.
 
 ## Runtime
 
@@ -26,7 +26,7 @@ When ChatGPT Sites provisions the project it adds the hosted project linkage to 
 
 ## Persistent data model
 
-Situation Room stores three durable record types.
+Situation Room stores current state, change history, sync history, encrypted Yahoo tokens and short-lived OAuth state records.
 
 ### Current state
 
@@ -56,7 +56,7 @@ Append-only audit records for every stored revision, including:
 - source: manual, Yahoo, NHL, or system
 - action
 - entity type and identifier where applicable
-- before/after values where supplied
+- server-computed before/after values for every changed top-level state field
 - metadata
 - timestamp
 - client change ID for idempotency
@@ -67,7 +67,7 @@ The UI exposes this in **History / Storage**.
 
 `situation_room_sync_runs`
 
-Reserved for Yahoo and other provider refreshes. It stores provider, status, timestamps, summary and error text so refreshes can be audited separately from individual state changes.
+Yahoo success and failure records contain status, timestamps, summary or error text. The UI displays these alongside change history.
 
 ## Save behavior
 
@@ -80,7 +80,7 @@ Every edit queues a `PUT /api/state` containing:
 - structured change description
 - unique client change ID
 
-The server writes the new snapshot and corresponding change record together.
+The server validates the state and writes the new snapshot and corresponding change record in one D1 transaction. A conditional history insert prevents a losing concurrent save from leaving a false event. Client change IDs let a repeated request recognize a committed save.
 
 If another session has already advanced the revision, the API returns a conflict instead of silently overwriting newer data.
 
@@ -114,20 +114,18 @@ Manual changes are first-class persistent changes. Current UI actions already wr
 - JSON backup import
 - reset
 
-## Yahoo integration model
+## Yahoo connection
 
-Yahoo is the next phase.
+The Site worker handles Yahoo's authorization code flow and read-only Fantasy API requests. It encrypts each user's access and refresh tokens with AES-GCM before storing them in D1. The client secret and encryption key stay in Site secrets. The browser receives neither the client secret nor the refresh token.
 
-The persistence layer is already designed for it:
+Configure these four hosted runtime values in Sites:
 
-1. Yahoo authentication and credentials live server-side as **ChatGPT Site secrets**.
-2. Yahoo fetches run through the Site worker, never from browser JavaScript with a secret.
-3. Yahoo response data is merged into the in-memory Situation Room model.
-4. The resulting state is written through the same D1 revision API using `source: yahoo`.
-5. Sync metadata is written to `situation_room_sync_runs`.
-6. Manual projections and protected-player choices can be preserved across Yahoo refreshes instead of being destroyed by a provider sync.
+- `YAHOO_CLIENT_ID`: Yahoo Developer application client ID
+- `YAHOO_CLIENT_SECRET`: Yahoo Developer application client secret
+- `YAHOO_REDIRECT_URI`: the deployed Site's exact `https://.../api/yahoo/callback` URL, also registered in the Yahoo application
+- `YAHOO_TOKEN_ENCRYPTION_KEY`: 64 hexadecimal characters representing 32 random bytes
 
-The current Site exposes a safe Yahoo status placeholder until that application/OAuth phase is configured. Dormant Yahoo routes return an explicit `501 YAHOO_NOT_CONFIGURED`; no Yahoo button is allowed to masquerade as a working integration.
+The worker requires the callback URL to match the current Site origin. After configuring the Yahoo application and Site secrets, use **Connect Yahoo** and **Sync now**. A sync discovers the user's league team, reads today's roster and available players, merges Yahoo facts with stored manual projections, then saves a revision and sync record. Available-player search uses the same read-only connection. Live Yahoo response shapes still need validation against this league; no credentials are present in this repository.
 
 ## NHL schedule
 
@@ -148,7 +146,9 @@ A successful refresh is persisted as an `nhl / schedule-refresh` revision. Seven
 - `GET /api/changes?limit=100`
 - `GET /api/sync-runs`
 - `GET /api/nhl/schedule?date=YYYY-MM-DD`
-- `GET /api/yahoo/status` (placeholder until Yahoo phase)
+- `GET /api/yahoo/status`, `/api/yahoo/login`, `/api/yahoo/callback`
+- `POST /api/yahoo/disconnect`, `/api/yahoo/sync-failure`
+- `GET /api/yahoo/teams`, `/api/yahoo/roster`, `/api/yahoo/available`, `/api/yahoo/transactions`, `/api/yahoo/league`
 
 API responses containing user state are marked `Cache-Control: no-store`. Static Site responses also receive CSP, clickjacking, referrer, MIME-sniffing and permissions-policy protections.
 
@@ -165,14 +165,14 @@ API responses containing user state are marked `Cache-Control: no-store`. Static
 
 CI checks TypeScript, browser JavaScript syntax, deterministic optimizer/data-quality tests, frontend/HTML selector contracts, persistence contracts, and a full ChatGPT Sites production build. GitGuardian also scans the branch for committed secrets.
 
-Actual deployed-Site D1 behavior and live Yahoo XML cannot be end-to-end validated until the Site is deployed and the Yahoo application is configured.
+Deployed-Site D1 behavior and live Yahoo XML require checks against the private production Site and the owner's Yahoo account.
 
 ## Build requirements
 
 OpenAI's current Sites tooling requires Node 22.13+ and Vite 8.
 
 ```bash
-npm install
+npm ci
 npm run check
 npm test
 npm run build
@@ -183,13 +183,15 @@ The production build packages:
 - static Situation Room UI
 - worker API
 - `.openai/hosting.json`
-- D1 migration files under `drizzle/`
+- generated D1 migration SQL and metadata under `drizzle/`, also copied into the Worker build output
+
+The original `0000_situation_room_persistence` migration is retained for existing databases. `0001_change_revision_uniqueness` guards concurrent history writes, `0002_revision_snapshots` adds immutable state snapshots, and `0003_yahoo_auth_and_history` adds the Yahoo token tables. Existing state rows are preserved during these upgrades.
 
 ## Deployment
 
 This repository is intended to be published through **ChatGPT Sites**, not operated as a standalone Node server.
 
-In ChatGPT Sites, use the repository/project as the source and ask Sites to deploy the current project. Sites will provision the D1 binding declared in `.openai/hosting.json` and apply the packaged database migration.
+In ChatGPT Sites, use the repository/project as the source and deploy the current project. Sites provisions the D1 binding declared in `.openai/hosting.json` and applies the packaged database migration. The worker checks for the schema at runtime and reports an error if deployment omitted it.
 
 The initial deployed Site should remain private to the intended user/workspace while Yahoo credentials and live league data are being validated.
 
@@ -213,8 +215,7 @@ ChatGPT Sites is currently a public-beta feature. OpenAI documents that deployed
 
 These are planned next-phase items rather than hidden defects:
 
-- ChatGPT Sites production deployment and deployed D1 smoke test.
-- Live Yahoo OAuth / Site-secret configuration.
+- Live Yahoo OAuth and league-data smoke test.
 - Live Yahoo XML capture and parser fixtures.
 - Automatic weekly acquisition counting from Yahoo transactions.
 - Automatic projection/FPPG provider.
@@ -225,15 +226,4 @@ These are planned next-phase items rather than hidden defects:
 
 ## Next phase
 
-Yahoo application integration:
-
-- configure Yahoo developer application
-- configure Site secrets
-- OAuth callback in the Sites worker
-- encrypted/persistent token handling appropriate for the hosted runtime
-- discover team/league
-- roster sync
-- available-player sync/search
-- transaction/week parsing
-- sync-run history
-- then projection and goalie-start providers
+Validate the first live Yahoo sync for this league, then add transaction-week parsing, forward projections and goalie-start data.

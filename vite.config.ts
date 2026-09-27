@@ -17,7 +17,7 @@ export default defineConfig(async () => {
         config: {
           name: "dead-puck-situation-room",
           main: "./worker/index.ts",
-          compatibility_date: "2026-09-26",
+          compatibility_date: "2026-05-22",
           compatibility_flags: ["nodejs_compat"],
           assets: {
             binding: "ASSETS",

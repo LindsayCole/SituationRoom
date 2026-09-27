@@ -25,7 +25,7 @@ test('dormant Yahoo frontend routes have an explicit server fallback',()=>{
 });
 
 test('state changes are unique per owner revision',()=>{
-  const db=fs.readFileSync(new URL('../worker/database.ts',import.meta.url),'utf8');
-  assert.match(db,/idx_situation_room_changes_owner_revision/);
-  assert.match(db,/owner_id, revision/);
+  const migration=fs.readFileSync(new URL('../drizzle/0001_change_revision_uniqueness.sql',import.meta.url),'utf8');
+  assert.match(migration,/idx_situation_room_changes_owner_revision/);
+  assert.match(migration,/owner_id, revision/);
 });

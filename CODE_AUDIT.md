@@ -200,7 +200,7 @@ Roster edits, add/remove, imports, waiver changes, projection edits, locally sta
 
 ## Yahoo readiness
 
-Yahoo application authorization is intentionally the next phase. The persistence layer is provider-neutral and already records Yahoo as a source when future Yahoo refreshes are applied.
+Yahoo application authorization was deferred in the initial v2.2 merge. The follow-up review implementation adds Site-side OAuth, encrypted per-user token storage, read-only Fantasy endpoints, and sync-run history. A live Yahoo sync still requires the owner's Site secrets and Yahoo application configuration.
 
 Yahoo secrets/tokens must not be stored in browser state or committed to Git. They will be handled by the Site worker and owner-managed Site secrets.
 
@@ -327,4 +327,8 @@ CI runs:
 7. Matchup/standings context is not yet incorporated.
 8. Yahoo write operations remain absent.
 9. Official Yahoo Fantasy branding is still required before public deployment using Yahoo data.
-10. Dependency versions are pinned directly, but a committed npm lockfile has not yet been generated. This is reproducibility hardening, not a current runtime defect.
+10. The v2.3 integration adds a committed npm lockfile and packaged D1 migrations. The private Site deployment and live Yahoo data remain to be checked separately.
+
+# v2.3 integration review
+
+The v2.2.1 persistence and data-quality fixes were reconciled with the Yahoo read-only integration. The Worker verifies that all required migration tables exist before serving persistent data, writes state/history/revision snapshots in one D1 batch, and computes changes from the stored state. The browser retains ordered saves and revision-aware recovery while Yahoo sync and sync history use the same persistence path. The four migrations apply in order to a legacy database, preserving its state.
