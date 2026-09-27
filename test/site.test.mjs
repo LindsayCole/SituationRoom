@@ -5,7 +5,7 @@ import { Miniflare } from 'miniflare';
 
 test('every literal app element reference exists in the page', async () => {
   const html = await readFile('index.html', 'utf8');
-  const app = await readFile('public/app.js', 'utf8');
+  const app = await readFile('src/app.js', 'utf8');
   const ids = new Set([...html.matchAll(/\bid="([^"]+)"/g)].map((match) => match[1]));
   const used = [...app.matchAll(/\$\('#([^']+)'\)/g)].map((match) => match[1]);
   assert.deepEqual([...new Set(used.filter((id) => !ids.has(id)))], []);

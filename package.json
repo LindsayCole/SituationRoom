@@ -11,7 +11,7 @@
     "dev": "vite",
     "build": "tsc -p tsconfig.worker.json --noEmit && vite build && node scripts/package-migrations.mjs",
     "preview": "vite preview",
-    "check": "tsc -p tsconfig.worker.json --noEmit && node --check public/app.js && node --check public/logic.js",
+    "check": "tsc -p tsconfig.worker.json --noEmit && node --check src/app.js && node --check src/logic.js",
     "test": "npm run build && node --test test/*.test.mjs"
   },
   "dependencies": {
