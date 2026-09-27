@@ -500,6 +500,7 @@ app.notFound(async (context) => {
   if (requestUrl.pathname !== "/api" && !requestUrl.pathname.startsWith("/api/")) {
     const asset = await context.env.ASSETS.fetch(context.req.raw);
     const headers = new Headers(asset.headers);
+    headers.set("Cache-Control", "no-store");
     headers.set("X-Content-Type-Options", "nosniff");
     headers.set("Referrer-Policy", "same-origin");
     headers.set("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
