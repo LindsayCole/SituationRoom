@@ -38,6 +38,19 @@ test('Site saves reject invalid state, recognize retries, and keep concurrent hi
     const legacy = await db.prepare(`SELECT revision FROM situation_room_state WHERE owner_id = 'legacy-owner'`).first();
     assert.equal(legacy.revision, 1);
     const endpoint = 'http://localhost:8787/api/state';
+    const productionEndpoint = 'https://situation-room.chatgpt.site/api/session';
+    const signedOut = await mf.dispatchFetch(productionEndpoint);
+    assert.equal(signedOut.status, 401);
+    const emailOnly = await mf.dispatchFetch(productionEndpoint, {
+      headers: { 'oai-authenticated-user-email': 'Owner@Example.Test' },
+    });
+    assert.equal(emailOnly.status, 200);
+    assert.equal((await emailOnly.json()).user.userId, 'owner@example.test');
+    const withOptionalId = await mf.dispatchFetch(productionEndpoint, {
+      headers: { 'oai-authenticated-user-id': 'opaque-id',
+        'oai-authenticated-user-email': 'Owner@Example.Test' },
+    });
+    assert.equal((await withOptionalId.json()).user.userId, 'owner@example.test');
     const state = (movesThisWeek) => ({ roster: [], waivers: [], schedule: {},
       selectedDate: '2026-09-26', movesThisWeek, yahoo: {} });
     const put = (movesThisWeek, baseRevision, clientChangeId) => mf.dispatchFetch(endpoint, {
