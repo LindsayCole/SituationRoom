@@ -25,6 +25,11 @@ export function isGoalie(player) {
   return (player.positions || []).map(String).map(x=>x.toUpperCase()).includes('G');
 }
 
+export function hasProjectionValue(player) {
+  if (String(player?.projectionSource || '').toLowerCase() === 'unset') return false;
+  return Number.isFinite(Number(player?.fppg));
+}
+
 export function isReserve(player) {
   return ['IR','IR+'].includes(String(player.selectedPosition || '').toUpperCase());
 }
@@ -54,6 +59,14 @@ export function playerHasTeamGame(player, schedule, date) {
 
 export function gamesOn(schedule, date) {
   return Number(schedule?.[date]?.games || 0);
+}
+
+export function hasScheduleWindow(schedule, start, days=7) {
+  if (!start || !schedule || typeof schedule !== 'object') return false;
+  for (let i=0;i<days;i++) {
+    if (!Object.prototype.hasOwnProperty.call(schedule, addDays(start,i))) return false;
+  }
+  return true;
 }
 
 export function nightClass(gameCount) {
@@ -115,7 +128,7 @@ export function optimizeDay(roster, schedule, date, activeSlots=ACTIVE_SLOTS) {
     goalieUnconfirmed,
     points:best.points,
     expectedStarts,
-    leakage:blocked.reduce((s,p)=>s+(p.fppg*p.availability),0)
+    leakage:blocked.reduce((s,p)=>s+Math.max(0,p.fppg*p.availability),0)
   };
 }
 
@@ -147,9 +160,28 @@ export function candidateScheduleMetrics(candidate, schedule, start) {
 }
 
 export function analyzeCandidate(candidate, state, activeSlots=ACTIVE_SLOTS) {
+  const scheduleMetrics=candidateScheduleMetrics(candidate,state.schedule,state.selectedDate);
+  if(!hasProjectionValue(candidate)) {
+    return {drop:null,delta:Number.NaN,usableDelta:Number.NaN,notActionable:true,projectionMissing:true,...scheduleMetrics};
+  }
+
+  const activeBench=(state.roster||[]).filter(p=>!isReserve(p));
+  const missingRosterProjections=activeBench.filter(p=>!hasProjectionValue(p));
+  if(missingRosterProjections.length) {
+    return {
+      drop:null,
+      delta:Number.NaN,
+      usableDelta:Number.NaN,
+      notActionable:true,
+      rosterProjectionMissing:true,
+      missingRosterProjectionIds:missingRosterProjections.map(p=>p.id),
+      ...scheduleMetrics
+    };
+  }
+
   const base=projectWeek(state.roster,state.schedule,state.selectedDate,activeSlots);
-  const activeBenchCount=(state.roster||[]).filter(p=>!isReserve(p)).length;
-  const possibleDrops=(state.roster||[]).filter(p=>p.canDrop!==false && !p.core && !isReserve(p));
+  const activeBenchCount=activeBench.length;
+  const possibleDrops=activeBench.filter(p=>p.canDrop!==false && !p.core);
   const trials=[];
 
   if(activeBenchCount < ACTIVE_BENCH_CAPACITY) {
@@ -164,7 +196,7 @@ export function analyzeCandidate(candidate, state, activeSlots=ACTIVE_SLOTS) {
   }
   trials.sort((a,b)=>b.delta-a.delta || b.usableDelta-a.usableDelta);
   const best=trials[0] || {drop:null,delta:Number.NEGATIVE_INFINITY,usableDelta:0,notActionable:true};
-  return {...best,...candidateScheduleMetrics(candidate,state.schedule,state.selectedDate)};
+  return {...best,...scheduleMetrics};
 }
 
 export function parsePlayerLines(text) {
@@ -174,15 +206,17 @@ export function parsePlayerLines(text) {
     if(!line) continue;
     const parts=line.includes('|') ? line.split('|') : line.split(',');
     if(parts.length<3) continue;
-    const [name,team,pos,fppg]=parts.map(x=>x.trim());
+    const [name,team,pos,fppgRaw='']=parts.map(x=>x.trim());
     const positions=parsePositions(pos);
     if(!name || !team || !positions.length) continue;
     const goalie=positions.includes('G');
+    const hasManualProjection=fppgRaw !== '' && Number.isFinite(Number(fppgRaw));
     out.push({
       id:makeUuid(),name,team:team.toUpperCase(),positions,
-      fppg:Number(fppg)||0,core:false,canDrop:true,
+      fppg:hasManualProjection ? Number(fppgRaw) : 0,core:false,canDrop:true,
       selectedPosition:'BN',status:'',source:'manual',
-      projectionSource:'manual',projectionUpdatedAt:null,
+      projectionSource:hasManualProjection ? 'manual' : 'unset',
+      projectionUpdatedAt:hasManualProjection ? new Date().toISOString() : null,
       startProbability:goalie ? 0 : 1
     });
   }

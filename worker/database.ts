@@ -73,8 +73,26 @@ async function initializeSchema(database: D1Database): Promise<void> {
       WHERE client_change_id IS NOT NULL
     `),
     database.prepare(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_situation_room_changes_owner_revision
+      ON situation_room_changes (owner_id, revision)
+    `),
+    database.prepare(`
       CREATE INDEX IF NOT EXISTS idx_situation_room_changes_owner_created
       ON situation_room_changes (owner_id, created_at DESC)
+    `),
+    database.prepare(`
+      CREATE TABLE IF NOT EXISTS situation_room_revisions (
+        owner_id TEXT NOT NULL,
+        revision INTEGER NOT NULL,
+        state_json TEXT NOT NULL,
+        change_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (owner_id, revision)
+      )
+    `),
+    database.prepare(`
+      CREATE INDEX IF NOT EXISTS idx_situation_room_revisions_owner_created
+      ON situation_room_revisions (owner_id, created_at DESC)
     `),
     database.prepare(`
       CREATE TABLE IF NOT EXISTS situation_room_sync_runs (

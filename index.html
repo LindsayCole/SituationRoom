@@ -32,7 +32,7 @@
     <section class="kpi-grid">
       <article class="kpi"><span>Moves left this week</span><strong id="kpiMoves">5 / 5</strong><small>Manual until transaction-week parsing lands</small></article>
       <article class="kpi"><span>Waiver priority</span><strong id="kpiPriority">#6</strong><small>Snapshot until Yahoo sync updates it</small></article>
-      <article class="kpi"><span>Active + bench</span><strong id="kpiRoster">3 / 18</strong><small id="kpiReserve">0 reserve</small></article>
+      <article class="kpi"><span>Active + bench</span><strong id="kpiRoster">0 / 18</strong><small id="kpiReserve">0 reserve</small></article>
       <article class="kpi"><span>Expected starts · 7d</span><strong id="kpiUsable">—</strong><small>Goalies weighted only when start chance is known</small></article>
       <article class="kpi"><span>Projected points · 7d</span><strong id="kpiPoints">—</strong><small>Uses editable FPPG</small></article>
       <article class="kpi danger-kpi"><span>Bench leakage · 7d</span><strong id="kpiLeakage">—</strong><small>Expected points blocked by full slots</small></article>
@@ -120,7 +120,7 @@
           <article class="card">
             <h3>Last successful sync</h3>
             <p id="lastYahooSync">Never</p>
-            <dl class="kv-list"><div><dt>Team key</dt><dd id="teamKeyValue">—</dd></div><div><dt>League key</dt><dd id="leagueKeyValue">—</dd></div><div><dt>Roster date</dt><dd id="rosterDateValue">—</dd></div><div><dt>Roster source</dt><dd id="rosterSourceValue">Local</dd></div></dl>
+            <dl class="kv-list"><div><dt>Team key</dt><dd id="teamKeyValue">—</dd></div><div><dt>League key</dt><dd id="leagueKeyValue">—</dd></div><div><dt>Roster date</dt><dd id="rosterDateValue">—</dd></div><div><dt>Roster source</dt><dd id="rosterSourceValue">Manual / stored</dd></div></dl>
           </article>
           <article class="card">
             <h3>Yahoo application integration</h3>
@@ -142,6 +142,7 @@
           <article class="card">
             <h3>Storage status</h3>
             <p id="storageStatusText">Loading Site storage…</p>
+            <div class="row-actions"><button class="btn" id="retryStorageBtn" hidden>Retry saves</button><button class="btn btn-danger" id="reloadSiteStateBtn" hidden>Reload Site state</button></div>
             <dl class="kv-list">
               <div><dt>Current revision</dt><dd id="storageRevision">0</dd></div>
               <div><dt>Last stored</dt><dd id="storageUpdatedAt">Never</dd></div>
@@ -185,15 +186,15 @@
       <section class="panel tab-panel" id="panel-bridge">
         <div class="panel-head"><div><div class="eyebrow">NO PAID OPENAI API REQUIRED</div><h2>ChatGPT bridge</h2></div><div class="status-pill">Manual handoff · one click</div></div>
         <div class="bridge-grid">
-          <article class="card bridge-card"><h3>Copy Situation Brief</h3><p>Packages the current Yahoo/local roster, schedule, blocked starts, goalie uncertainty and waiver model into a structured packet.</p><button class="btn btn-primary" id="copyBriefBtn">Copy Situation Brief</button><div class="copy-status" id="copyStatus"></div></article>
+          <article class="card bridge-card"><h3>Copy Situation Brief</h3><p>Packages the current stored roster, schedule, blocked starts, goalie uncertainty and waiver model into a structured packet.</p><button class="btn btn-primary" id="copyBriefBtn">Copy Situation Brief</button><div class="copy-status" id="copyStatus"></div></article>
           <article class="card"><h3>Data backup</h3><div class="row-actions"><button class="btn" id="exportBtn">Export JSON</button><label class="btn file-btn">Import JSON<input type="file" id="importFile" accept="application/json" /></label></div></article>
           <article class="card"><h3>Future direct ChatGPT access</h3><p>An MCP layer can be added later so an authorized ChatGPT session can query this same store directly without putting a paid OpenAI model inside the site.</p></article>
-          <article class="card"><h3>Local reset</h3><p>Deletes browser-saved roster, waiver and schedule data. Yahoo credentials live server-side and are unaffected.</p><button class="btn btn-danger" id="resetBtn">Reset local data</button></article>
+          <article class="card"><h3>Reset stored data</h3><p>Resets the persisted Situation Room roster, waiver pool and schedule to an empty seed and records the reset in history. Yahoo credentials are separate.</p><button class="btn btn-danger" id="resetBtn">Reset stored data</button></article>
         </div>
       </section>
     </main>
 
-    <footer><span>Dead Puck Society Situation Room · v2 alpha</span><span id="saveStatus">Saved locally</span></footer>
+    <footer><span>Dead Puck Society Situation Room · v2.2.1 alpha</span><span id="saveStatus">Loading Site storage…</span></footer>
   </div>
   <script type="module" src="/app.js"></script>
 </body>
