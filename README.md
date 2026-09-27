@@ -127,6 +127,8 @@ Configure these four hosted runtime values in Sites:
 
 The worker requires the callback URL to match the current Site origin. After configuring the Yahoo application and Site secrets, use **Connect Yahoo** and **Sync now**. A sync discovers the user's league team, reads today's roster and available players, merges Yahoo facts with stored manual projections, then saves a revision and sync record. Available-player search uses the same read-only connection. Live Yahoo response shapes still need validation against this league; no credentials are present in this repository.
 
+Yahoo [reviews Fantasy API access separately](https://sports.yahoo.com/developer/access/). A successful OAuth connection does not by itself confirm that Fantasy requests are permitted. If the API responds with 403, the Site keeps manual entry available and records the failed sync attempt.
+
 ## NHL schedule
 
 The Site worker proxies the public NHL schedule endpoint through:
