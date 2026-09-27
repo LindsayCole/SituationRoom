@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { analyzeCandidate, hasScheduleWindow, mondayOf, optimizeDay, parsePlayerLines,
-  parseRosterSnapshotLines, playerAvailability, projectWeek } from '../public/logic.js';
+  parseRosterSnapshotLines, playerAvailability, projectWeek } from '../src/logic.js';
 
 const schedule={
   '2026-10-01':{games:5,teams:['AAA','BBB','CCC','DDD']},

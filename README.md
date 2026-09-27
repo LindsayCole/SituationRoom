@@ -191,7 +191,7 @@ npm run build
 
 The production build packages:
 
-- static Situation Room UI
+- content-hashed Situation Room scripts and styles so a new deployment cannot reuse stale browser assets
 - worker API
 - `.openai/hosting.json`
 - generated D1 migration SQL and metadata under `drizzle/`, also copied into the Worker build output
