@@ -48,6 +48,14 @@ test('Site saves reject invalid state, recognize retries, and keep concurrent hi
       headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ state: null, baseRevision: 0 }) });
     assert.equal(invalid.status, 400);
 
+    const freshPut = (clientChangeId) => mf.dispatchFetch(endpoint, { method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'oai-authenticated-user-id': 'fresh-owner',
+        'oai-authenticated-user-email': 'fresh@example.test' },
+      body: JSON.stringify({ state: state(0), baseRevision: 0,
+        change: { action: 'initial-race', clientChangeId } }) });
+    const freshRace = await Promise.all([freshPut('fresh-one'), freshPut('fresh-two')]);
+    assert.deepEqual(freshRace.map((response) => response.status).sort(), [200, 409]);
+
     const first = await put(0, 0, 'initial');
     assert.equal(first.status, 200);
     assert.equal((await first.json()).revision, 1);

@@ -112,7 +112,7 @@ app.get("/api/state", async (context) => {
   });
 });
 
-app.put("/api/state", async (context) => {
+app.put("/api/state", async (context): Promise<Response> => {
   const input = (await context.req.json().catch(() => null)) as StateWriteInput | null;
   if (!input || !isValidState(input.state)) {
     return context.json({ error: "A valid Situation Room state is required." }, 400);
@@ -235,14 +235,14 @@ app.put("/api/state", async (context) => {
       );
     }
   } catch (error) {
-    if (clientChangeId && isUniqueConstraint(error)) {
-      const existing = await context.env.DB.prepare(
+    if (isUniqueConstraint(error)) {
+      const existing = clientChangeId ? await context.env.DB.prepare(
         `SELECT revision, created_at
          FROM situation_room_changes
          WHERE owner_id = ? AND client_change_id = ?`,
       )
         .bind(ownerId, clientChangeId)
-        .first<{ revision: number; created_at: string }>();
+        .first<{ revision: number; created_at: string }>() : null;
       if (existing) {
         return context.json({
           ok: true,
@@ -251,6 +251,13 @@ app.put("/api/state", async (context) => {
           currentRevision: currentRevision,
           updatedAt: existing.created_at,
         });
+      }
+      const latest = await context.env.DB.prepare(
+        `SELECT state_json, revision, updated_at FROM situation_room_state WHERE owner_id = ?`,
+      ).bind(ownerId).first<StateRow>();
+      if (latest && latest.revision !== baseRevision) {
+        return context.json({ error: "Situation Room state changed during save.", conflict: true,
+          revision: latest.revision, state: safeParseJson(latest.state_json), updatedAt: latest.updated_at }, 409);
       }
     }
     throw error;
