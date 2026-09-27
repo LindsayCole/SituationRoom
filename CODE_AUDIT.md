@@ -332,3 +332,5 @@ CI runs:
 # v2.3 integration review
 
 The v2.2.1 persistence and data-quality fixes were reconciled with the Yahoo read-only integration. The Worker verifies that all required migration tables exist before serving persistent data, writes state/history/revision snapshots in one D1 batch, and computes changes from the stored state. The browser retains ordered saves and revision-aware recovery while Yahoo sync and sync history use the same persistence path. The four migrations apply in order to a legacy database, preserving its state.
+
+The first private Sites deployment showed that Sites provisioned a D1 binding but did not apply SQL migrations. The worker now applies the checked-in idempotent migrations on first API access and verifies all six tables and five indexes. Tests cover both an empty production-style D1 database and a legacy v2.2 database with stored state.

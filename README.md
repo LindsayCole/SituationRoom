@@ -191,7 +191,7 @@ The original `0000_situation_room_persistence` migration is retained for existin
 
 This repository is intended to be published through **ChatGPT Sites**, not operated as a standalone Node server.
 
-In ChatGPT Sites, use the repository/project as the source and deploy the current project. Sites provisions the D1 binding declared in `.openai/hosting.json` and applies the packaged database migration. The worker checks for the schema at runtime and reports an error if deployment omitted it.
+In ChatGPT Sites, use the repository/project as the source and deploy the current project. Sites provisions the D1 binding declared in `.openai/hosting.json`. On its first API request, the worker applies the checked-in, idempotent SQL migrations if required objects are absent, then verifies the schema. This also upgrades an existing v2.2 database without replacing stored state.
 
 The initial deployed Site should remain private to the intended user/workspace while Yahoo credentials and live league data are being validated.
 

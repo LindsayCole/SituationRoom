@@ -11,6 +11,28 @@ test('every literal app element reference exists in the page', async () => {
   assert.deepEqual([...new Set(used.filter((id) => !ids.has(id)))], []);
 });
 
+test('a fresh Sites D1 database bootstraps before the first state request', async () => {
+  const mf = new Miniflare({
+    scriptPath: 'dist/dead_puck_situation_room/index.js',
+    modules: true,
+    modulesRules: [{ type: 'ESModule', include: ['**/*.js'] }],
+    compatibilityDate: '2026-05-22',
+    compatibilityFlags: ['nodejs_compat'],
+    d1Databases: ['DB'],
+  });
+  try {
+    const response = await mf.dispatchFetch('http://localhost:8787/api/state');
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).revision, 0);
+    const tables = await (await mf.getD1Database('DB')).prepare(
+      `SELECT name FROM sqlite_schema WHERE type = 'table' AND name LIKE 'situation_room_%'`,
+    ).all();
+    assert.equal(tables.results.length, 6);
+  } finally {
+    await mf.dispose();
+  }
+});
+
 test('Site saves reject invalid state, recognize retries, and keep concurrent history exact', async () => {
   const mf = new Miniflare({
     scriptPath: 'dist/dead_puck_situation_room/index.js',
@@ -29,12 +51,8 @@ test('Site saves reject invalid state, recognize retries, and keep concurrent hi
     await db.prepare(`INSERT INTO situation_room_state
       (owner_id, state_json, revision, created_at, updated_at)
       VALUES ('legacy-owner', '{}', 1, '2026-09-01', '2026-09-01')`).run();
-    for (const name of ['0001_change_revision_uniqueness', '0002_revision_snapshots', '0003_yahoo_auth_and_history']) {
-      const upgrade = await readFile(`dist/dead_puck_situation_room/drizzle/${name}.sql`, 'utf8');
-      for (const statement of upgrade.replaceAll('--> statement-breakpoint', '').split(';').map((part) => part.trim()).filter(Boolean)) {
-        await db.prepare(statement).run();
-      }
-    }
+    const upgradeResponse = await mf.dispatchFetch('http://localhost:8787/api/health');
+    assert.equal(upgradeResponse.status, 200);
     const legacy = await db.prepare(`SELECT revision FROM situation_room_state WHERE owner_id = 'legacy-owner'`).first();
     assert.equal(legacy.revision, 1);
     const endpoint = 'http://localhost:8787/api/state';
