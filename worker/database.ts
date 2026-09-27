@@ -41,12 +41,27 @@ export function ensureSchema(database: D1Database): Promise<void> {
 }
 
 async function verifySchema(database: D1Database): Promise<void> {
-  const result = await database.prepare(
-    `SELECT name FROM sqlite_schema WHERE type = 'table' AND name IN
-      ('situation_room_state', 'situation_room_changes', 'situation_room_sync_runs',
-       'situation_room_revisions', 'situation_room_yahoo_tokens', 'situation_room_yahoo_oauth_states')`,
-  ).all<{ name: string }>();
-  if (result.results.length !== 6) throw new Error("Situation Room D1 migration has not been applied.");
+  const required = [
+    "situation_room_state", "situation_room_changes", "situation_room_sync_runs",
+    "situation_room_revisions", "situation_room_yahoo_tokens", "situation_room_yahoo_oauth_states",
+    "idx_situation_room_changes_owner_client", "idx_situation_room_changes_owner_created",
+    "idx_situation_room_changes_owner_revision", "idx_situation_room_sync_owner_started",
+    "idx_situation_room_revisions_owner_created",
+  ];
+  const present = async () => new Set((await database.prepare(
+    `SELECT name FROM sqlite_schema WHERE name IN (${required.map(() => "?").join(",")})`,
+  ).bind(...required).all<{ name: string }>()).results.map((row) => row.name));
+
+  const current = await present();
+  if (required.every((name) => current.has(name))) return;
+  for (const sql of [initialMigration, revisionIndexMigration, snapshotMigration, yahooMigration]) {
+    for (const statement of sql.replaceAll("--> statement-breakpoint", "").split(";").map((part) => part.trim()).filter(Boolean)) {
+      await database.prepare(statement).run();
+    }
+  }
+  const updated = await present();
+  if (!required.every((name) => updated.has(name)))
+    throw new Error("Situation Room D1 migration is incomplete.");
 }
 export function safeParseJson<T>(value: string | null): T | null {
   if (!value) return null;
@@ -56,3 +71,7 @@ export function safeParseJson<T>(value: string | null): T | null {
     return null;
   }
 }
+import initialMigration from "../drizzle/0000_situation_room_persistence.sql?raw";
+import revisionIndexMigration from "../drizzle/0001_change_revision_uniqueness.sql?raw";
+import snapshotMigration from "../drizzle/0002_revision_snapshots.sql?raw";
+import yahooMigration from "../drizzle/0003_yahoo_auth_and_history.sql?raw";
