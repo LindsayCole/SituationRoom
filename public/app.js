@@ -184,7 +184,32 @@ let stateRevision = 0;
 let stateUpdatedAt = null;
 let saveChain = Promise.resolve();
 let historyRows = [];
+let syncRows = [];
 let yahooStatus = { configured:false, connected:false, writeEnabled:false, readOnlyDefault:true };
+let recoveryQueue = readRecoveryQueue();
+
+function readRecoveryQueue() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(PENDING_RECOVERY_KEY) || '[]');
+    return (Array.isArray(parsed) ? parsed : [parsed]).filter(x=>x && x.state && x.change);
+  } catch { return []; }
+}
+
+function writeRecoveryQueue() {
+  try {
+    if (recoveryQueue.length) localStorage.setItem(PENDING_RECOVERY_KEY,JSON.stringify(recoveryQueue));
+    else localStorage.removeItem(PENDING_RECOVERY_KEY);
+    renderRecoveryNotice();
+    return true;
+  } catch (err) { console.warn('Browser recovery storage is unavailable.',err);return false; }
+}
+
+function renderRecoveryNotice() {
+  const notice=$('#recoveryNotice');
+  if (!notice) return;
+  notice.hidden=!recoveryQueue.length;
+  if (recoveryQueue.length) $('#recoveryText').textContent=`${recoveryQueue.length} recovery ${recoveryQueue.length===1?'copy':'copies'} remain. Download one before replacing newer Site data.`;
+}
 
 async function loadPersistedState() {
   $('#saveStatus').textContent = 'Loading Site storage…';
@@ -193,15 +218,23 @@ async function loadPersistedState() {
     state = normalizeState(stored.state);
     stateRevision = Number(stored.revision) || 0;
     stateUpdatedAt = stored.updatedAt || null;
+    recoveryQueue = recoveryQueue.filter(x=>JSON.stringify(x.state)!==JSON.stringify(stored.state));
+    writeRecoveryQueue();
+    const latest = recoveryQueue.at(-1);
+    if (latest && recoveryQueue.length===1 && latest.baseRevision===stateRevision) {
+      state=normalizeState(latest.state);
+      await saveState(latest.change);
+    }
     $('#saveStatus').textContent = `Saved to Site · rev ${stateRevision}`;
     return;
   }
 
   const browser = loadBrowserStateForMigration();
-  state = browser?.state || clone(seedState);
+  const pending = recoveryQueue.at(-1);
+  state = pending?.state ? normalizeState(pending.state) : browser?.state || clone(seedState);
   await saveState({
     source:'system',
-    action:browser ? 'migrate-browser-state' : 'initialize-state',
+    action:pending ? 'recover-unsaved-state' : browser ? 'migrate-browser-state' : 'initialize-state',
     metadata:{browserSource:browser?.source || null}
   });
   if (browser) {
@@ -212,14 +245,12 @@ async function loadPersistedState() {
 
 function saveState(change={}) {
   const snapshot = clone(state);
-  const clientChangeId = makeUuid();
+  const clientChangeId = change.clientChangeId || makeUuid();
   const normalizedChange = {
     source:change.source || 'manual',
     action:change.action || 'state-update',
     entityType:change.entityType || null,
     entityId:change.entityId || null,
-    before:change.before,
-    after:change.after,
     metadata:change.metadata,
     clientChangeId
   };
@@ -236,11 +267,20 @@ function saveState(change={}) {
           change:normalizedChange
         })
       });
+      if (result.duplicate && Number(result.currentRevision)!==Number(result.revision)) {
+        const latest = await fetchJson('/api/state');
+        if (JSON.stringify(latest.state)!==JSON.stringify(snapshot)) {
+          throw Object.assign(new Error('The Site changed after this save. Review the recovery copy before continuing.'),{status:409});
+        }
+        result.revision=latest.revision;
+        result.updatedAt=latest.updatedAt;
+      }
       stateRevision = Number(result.revision) || stateRevision;
       stateUpdatedAt = result.updatedAt || new Date().toISOString();
-      localStorage.removeItem(PENDING_RECOVERY_KEY);
+      recoveryQueue = recoveryQueue.filter(x=>x.change.clientChangeId!==clientChangeId && JSON.stringify(x.state)!==JSON.stringify(snapshot));
+      writeRecoveryQueue();
       $('#saveStatus').textContent = `Saved to Site · rev ${stateRevision}`;
-      historyRows.unshift({
+      if (!result.duplicate) historyRows.unshift({
         id:result.changeId || clientChangeId,
         revision:stateRevision,
         source:normalizedChange.source,
@@ -255,14 +295,14 @@ function saveState(change={}) {
       renderHistory();
       return result;
     } catch (err) {
-      localStorage.setItem(PENDING_RECOVERY_KEY,JSON.stringify({
-        state:snapshot,
-        change:normalizedChange,
-        failedAt:new Date().toISOString()
-      }));
-      $('#saveStatus').textContent = err.status===409
-        ? 'Save conflict · recovery copy kept in browser'
-        : 'Save failed · recovery copy kept in browser';
+      let recoveredLocally=true;
+      if (!recoveryQueue.some(x=>x.change.clientChangeId===clientChangeId)) {
+        recoveryQueue.push({state:snapshot,change:normalizedChange,baseRevision:stateRevision,failedAt:new Date().toISOString()});
+        recoveredLocally=writeRecoveryQueue();
+      }
+      $('#saveStatus').textContent = recoveredLocally
+        ? err.status===409 ? 'Save conflict · recovery copy kept in browser' : 'Save failed · recovery copy kept in browser'
+        : 'Save failed · download your edits before closing';
       renderPersistenceStatus(err.message);
       throw err;
     }
@@ -438,8 +478,11 @@ async function refreshSchedule() {
 
 async function loadHistory() {
   try {
-    const data = await fetchJson('/api/changes?limit=100');
-    historyRows = Array.isArray(data.changes) ? data.changes : [];
+    const [changes,syncRuns] = await Promise.all([
+      fetchJson('/api/changes?limit=100'),fetchJson('/api/sync-runs')
+    ]);
+    historyRows = Array.isArray(changes.changes) ? changes.changes : [];
+    syncRows = Array.isArray(syncRuns.syncRuns) ? syncRuns.syncRuns : [];
   } catch (err) {
     console.warn('Change history could not be loaded.',err);
   }
@@ -457,6 +500,10 @@ function renderPersistenceStatus(errorText='') {
     pill.textContent='Site storage: attention';
     pill.className='status-pill status-warn';
     status.textContent=errorText;
+  } else if (recoveryQueue.length) {
+    pill.textContent='Site storage: unsaved edits';
+    pill.className='status-pill status-warn';
+    status.textContent='Recovery copies are waiting on this device. Review them before discarding.';
   } else {
     pill.textContent=`Site storage: saved · r${stateRevision}`;
     pill.className='status-pill good';
@@ -468,6 +515,12 @@ function renderPersistenceStatus(errorText='') {
 
 function renderHistory() {
   const body=$('#historyTable');
+  const syncBody=$('#syncHistoryTable');
+  if (syncBody) {
+    syncBody.innerHTML=syncRows.length
+      ? syncRows.map(row=>`<tr><td>${esc(fmtWhen(row.completedAt||row.startedAt))}</td><td>${esc(row.status)}</td><td>${esc(row.error || JSON.stringify(row.summary||{}))}</td></tr>`).join('')
+      : '<tr><td colspan="3" class="muted">No Yahoo sync attempts yet.</td></tr>';
+  }
   if (!body) return;
   body.innerHTML='';
   if (!historyRows.length) {
@@ -519,7 +572,7 @@ function renderYahooStatus() {
     panel.textContent = 'Connected · read sync ready';
     panel.className = 'status-pill good';
     connect.hidden = true; sync.hidden = false; disconnect.hidden = false; headerSync.hidden = false;
-    text.textContent = 'Yahoo is connected. Syncing reads your fantasy team and available-player data into the local analysis model.';
+    text.textContent = 'Yahoo is connected. Syncing reads your fantasy team and available-player data into the Site.';
   }
   $('#writeAccessText').textContent = yahooStatus.writeEnabled
     ? 'Feature flag is enabled, but this v2 alpha still exposes no write endpoints. Yahoo approval must be confirmed first.'
@@ -529,9 +582,9 @@ function renderYahooStatus() {
   $('#leagueKeyValue').textContent = state.yahoo.leagueKey || '—';
   $('#rosterSourceValue').textContent = state.yahoo.rosterSource || 'local';
   $('#rosterDateValue').textContent = state.yahoo.rosterDate || '—';
-  $('#yahooRedirectUri').textContent = yahooStatus.redirectUri || 'Will be assigned when Yahoo OAuth is added to the Site';
-  $('#yahooMissingConfig').textContent = yahooStatus.configured ? 'Configured' : 'Yahoo app setup is the next phase';
-  $('#yahooPoolSummary').textContent = state.waivers.length
+  $('#yahooRedirectUri').textContent = yahooStatus.redirectUri || 'Set YAHOO_REDIRECT_URI in Site secrets';
+  $('#yahooMissingConfig').textContent = yahooStatus.configured ? 'Configured' : yahooStatus.missingConfig?.join(', ') || 'Yahoo Site secrets missing';
+  $('#waiverPoolSummary').textContent = state.waivers.length
     ? `${state.waivers.length} available players in local pool`
     : 'No Yahoo player pool loaded yet';
 }
@@ -550,15 +603,13 @@ async function syncYahoo() {
     const team = teams.find(t=>t.teamKey.includes(leagueFragment)) || teams.find(t=>t.name.toLowerCase()===league.teamName.toLowerCase());
     if (!team) throw new Error(`Could not find ${league.teamName} in Yahoo league ${league.id}.`);
     const leagueKey = team.teamKey.split('.t.')[0];
-    state.yahoo.teamKey = team.teamKey;
-    state.yahoo.leagueKey = leagueKey;
 
     const rosterDate = isoDate(new Date());
     log.textContent = `Syncing current roster for ${rosterDate}…`;
     const rosterDoc = await fetchXml(`/api/yahoo/roster?teamKey=${encodeURIComponent(team.teamKey)}&date=${encodeURIComponent(rosterDate)}`);
     const rosterPlayers = parseYahooPlayers(rosterDoc,'yahoo-roster');
     if (!rosterPlayers.length) throw new Error('Yahoo roster response contained no players.');
-    state.roster = mergeYahooRoster(rosterPlayers);
+    const nextRoster = mergeYahooRoster(rosterPlayers);
 
     log.textContent = 'Loading available players…';
     const [availableDoc0, availableDoc50] = await Promise.all([
@@ -567,13 +618,19 @@ async function syncYahoo() {
     ]);
     const available = [...parseYahooPlayers(availableDoc0,'yahoo-available'), ...parseYahooPlayers(availableDoc50,'yahoo-available')];
     const seen = new Set();
-    state.waivers = mergeYahooWaivers(available.filter(p=>p.yahooPlayerKey && !seen.has(p.yahooPlayerKey) && seen.add(p.yahooPlayerKey)));
+    const yahooWaivers = mergeYahooWaivers(available.filter(p=>p.yahooPlayerKey && !seen.has(p.yahooPlayerKey) && seen.add(p.yahooPlayerKey)));
+    const nextWaivers = [...state.waivers.filter(p=>!p.yahooPlayerKey),...yahooWaivers];
 
+    state.roster = nextRoster;
+    state.waivers = nextWaivers;
+    state.yahoo.teamKey = team.teamKey;
+    state.yahoo.leagueKey = leagueKey;
     state.yahoo.lastSyncAt = new Date().toISOString();
     state.yahoo.rosterDate = rosterDate;
     state.yahoo.availableCount = state.waivers.length;
     state.yahoo.rosterSource = 'Yahoo Fantasy';
-    saveState({source:'yahoo',action:'yahoo-sync',metadata:{rosterCount:state.roster.length,availableCount:state.waivers.length,rosterDate}});
+    await saveState({source:'yahoo',action:'yahoo-sync',metadata:{rosterCount:state.roster.length,availableCount:state.waivers.length,rosterDate}});
+    await loadHistory();
     renderAll();
     log.className = 'action-banner good';
     const rosterPoints = state.roster.filter(p=>p.yahooSeasonPoints !== null).length;
@@ -582,6 +639,9 @@ async function syncYahoo() {
   } catch (err) {
     log.className = 'action-banner warn';
     log.textContent = `Yahoo sync failed: ${err.message}`;
+    try { await fetchJson('/api/yahoo/sync-failure',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({error:err.message})}); }
+    catch (historyError) { console.warn('Yahoo failure could not be recorded.',historyError); }
+    await loadHistory();
     if (/not connected|401/i.test(err.message)) await loadYahooStatus();
   } finally {
     buttons.forEach((b,i)=>{b.disabled=false;b.textContent=i===0?'Sync now':'Sync Yahoo';});
@@ -620,7 +680,7 @@ async function searchYahooPlayers() {
     for (const p of incoming) byKey.set(p.yahooPlayerKey,p);
     state.waivers = [...manual, ...byKey.values()];
     state.yahoo.availableCount = state.waivers.length;
-    saveState({source:'yahoo',action:'yahoo-player-search',metadata:{query,position,matched:incoming.length}});
+    await saveState({source:'yahoo',action:'yahoo-player-search',metadata:{query,position,matched:incoming.length}});
     renderAll();
     $('#yahooSyncLog').className = 'action-banner good';
     $('#yahooSyncLog').textContent = incoming.length
@@ -915,7 +975,7 @@ function importBackup(file) {
 
 function renderAll() {
   $('#todayDate').value=state.selectedDate;
-  renderScheduleStatus();renderKPIs();renderToday();renderWeek();renderWaivers();renderRoster();renderLeague();renderYahooStatus();renderPersistenceStatus();renderHistory();
+  renderScheduleStatus();renderKPIs();renderToday();renderWeek();renderWaivers();renderRoster();renderLeague();renderYahooStatus();renderPersistenceStatus();renderHistory();renderRecoveryNotice();
 }
 
 $$('.tab').forEach(btn=>btn.addEventListener('click',()=>{
@@ -932,7 +992,29 @@ $('#yahooPlayerSearch').addEventListener('keydown',e=>{if(e.key==='Enter')search
 $('#waiverFilterInput').addEventListener('input',renderWaivers);
 $('#waiverPositionFilter').addEventListener('change',renderWaivers);
 $('#refreshHistoryBtn').addEventListener('click',loadHistory);
-$('#disconnectYahooBtn').addEventListener('click',async()=>{if(!confirm('Disconnect Yahoo from this local Situation Room server?'))return;await fetchJson('/api/yahoo/disconnect',{method:'POST'});state.yahoo={...clone(seedState.yahoo)};saveState();await loadYahooStatus();renderAll();});
+$('#downloadRecoveryBtn').addEventListener('click',()=>{
+  const blob=new Blob([JSON.stringify({recoveryCopies:recoveryQueue},null,2)],{type:'application/json'});
+  const link=document.createElement('a');link.href=URL.createObjectURL(blob);
+  link.download=`dead-puck-recovery-${isoDate(new Date())}.json`;link.click();URL.revokeObjectURL(link.href);
+});
+$('#restoreRecoveryBtn').addEventListener('click',async()=>{
+  const pending=recoveryQueue.at(-1);
+  if (!pending) return;
+  try {
+    const latest=await fetchJson('/api/state');
+    if (Number(latest.revision)!==Number(pending.baseRevision)
+      && !confirm('The Site has newer changes. Restoring this copy will replace its current state. Continue?')) return;
+    state=normalizeState(pending.state);
+    stateRevision=Number(latest.revision)||0;
+    await saveState({source:'manual',action:'recover-unsaved-state',metadata:{recoveredAt:new Date().toISOString()}});
+    renderAll();
+  } catch (err) { alert(`Recovery was not saved: ${err.message}`);renderPersistenceStatus(err.message); }
+});
+$('#discardRecoveryBtn').addEventListener('click',()=>{
+  if (!confirm('Discard all browser recovery copies?')) return;
+  recoveryQueue=[];writeRecoveryQueue();renderPersistenceStatus();
+});
+$('#disconnectYahooBtn').addEventListener('click',async()=>{if(!confirm('Disconnect Yahoo from this Site?'))return;await fetchJson('/api/yahoo/disconnect',{method:'POST'});state.yahoo={...clone(seedState.yahoo)};await saveState({source:'manual',action:'yahoo-disconnect'});await loadYahooStatus();renderAll();});
 $('#importWaiversBtn').addEventListener('click',()=>{const players=parsePlayerLines($('#waiverImport').value);if(!players.length){alert('No valid waiver lines found.');return;}state.waivers=players;saveState({source:'manual',action:'waiver-import',metadata:{count:players.length}});renderAll();});
 $('#clearWaiversBtn').addEventListener('click',()=>{if(confirm('Clear the stored waiver candidate pool?')){const count=state.waivers.length;state.waivers=[];saveState({source:'manual',action:'waiver-clear',metadata:{count}});renderAll();}});
 $('#addRosterRowBtn').addEventListener('click',()=>{const player=normalizeLoadedPlayer({id:makeUuid(),name:'New player',team:'',positions:['C'],fppg:0,core:false,canDrop:true,selectedPosition:'BN',source:'manual'});state.roster.push(player);saveState({source:'manual',action:'roster-add',entityType:'player',entityId:player.id,after:player});renderAll();});

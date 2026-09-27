@@ -26,7 +26,14 @@
 
     <section class="notice" id="seedNotice">
       <strong>Persistent ChatGPT Site storage is now the source of truth.</strong>
-      Roster edits, projections, manual imports, schedule refreshes and future Yahoo syncs are saved as durable revisions with change history. Yahoo transactions remain disabled.
+      Roster edits, projections, manual imports, schedule refreshes and Yahoo syncs are saved as durable revisions with change history. Yahoo transactions remain disabled.
+    </section>
+    <section class="notice" id="recoveryNotice" hidden>
+      <strong>Unsaved edits are available on this device.</strong>
+      <span id="recoveryText"></span>
+      <button class="btn" id="downloadRecoveryBtn">Download recovery copies</button>
+      <button class="btn btn-primary" id="restoreRecoveryBtn">Restore latest edits</button>
+      <button class="btn" id="discardRecoveryBtn">Discard recovery copies</button>
     </section>
 
     <section class="kpi-grid">
@@ -125,7 +132,7 @@
           <article class="card">
             <h3>Yahoo application integration</h3>
             <dl class="kv-list"><div><dt>Site secret status</dt><dd id="yahooMissingConfig">Checking…</dd></div><div><dt>OAuth callback</dt><dd><code id="yahooRedirectUri">Pending Yahoo phase</code></dd></div></dl>
-            <div class="mini-note">Yahoo credentials will be configured as ChatGPT Site secrets. They will not be stored in browser data or committed to GitHub.</div>
+            <div class="mini-note">Configure Yahoo credentials as ChatGPT Site secrets. They are not stored in browser data or committed to GitHub.</div>
           </article>
         </div>
         <div class="action-banner" id="yahooSyncLog">Yahoo sync has not run yet.</div>
@@ -153,7 +160,7 @@
             <ul class="clean-list">
               <li>Every saved state receives a monotonically increasing revision.</li>
               <li>Each revision also writes an append-only change record.</li>
-              <li>Manual changes and future Yahoo syncs use the same store.</li>
+              <li>Manual changes and Yahoo syncs use the same store.</li>
               <li>Two stale browser sessions cannot silently overwrite one another.</li>
               <li>Browser storage is used only as emergency recovery if a Site save fails.</li>
             </ul>
@@ -166,6 +173,11 @@
             <tbody id="historyTable"></tbody>
           </table>
         </div>
+        <h3>Yahoo sync attempts</h3>
+        <div class="table-wrap"><table class="wide-table">
+          <thead><tr><th>Time</th><th>Result</th><th>Summary</th></tr></thead>
+          <tbody id="syncHistoryTable"></tbody>
+        </table></div>
       </section>
 
       <section class="panel tab-panel" id="panel-league">
@@ -188,12 +200,12 @@
           <article class="card bridge-card"><h3>Copy Situation Brief</h3><p>Packages the current Yahoo/local roster, schedule, blocked starts, goalie uncertainty and waiver model into a structured packet.</p><button class="btn btn-primary" id="copyBriefBtn">Copy Situation Brief</button><div class="copy-status" id="copyStatus"></div></article>
           <article class="card"><h3>Data backup</h3><div class="row-actions"><button class="btn" id="exportBtn">Export JSON</button><label class="btn file-btn">Import JSON<input type="file" id="importFile" accept="application/json" /></label></div></article>
           <article class="card"><h3>Future direct ChatGPT access</h3><p>An MCP layer can be added later so an authorized ChatGPT session can query this same store directly without putting a paid OpenAI model inside the site.</p></article>
-          <article class="card"><h3>Local reset</h3><p>Deletes browser-saved roster, waiver and schedule data. Yahoo credentials live server-side and are unaffected.</p><button class="btn btn-danger" id="resetBtn">Reset local data</button></article>
+          <article class="card"><h3>Reset stored state</h3><p>Replaces the current Site roster, waiver pool and schedule with the sample starting state. A revision is kept in history.</p><button class="btn btn-danger" id="resetBtn">Reset Site data</button></article>
         </div>
       </section>
     </main>
 
-    <footer><span>Dead Puck Society Situation Room · v2 alpha</span><span id="saveStatus">Saved locally</span></footer>
+    <footer><span>Dead Puck Society Situation Room · v2 alpha</span><span id="saveStatus">Checking Site storage…</span></footer>
   </div>
   <script type="module" src="/app.js"></script>
 </body>

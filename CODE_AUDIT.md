@@ -200,6 +200,6 @@ Roster edits, add/remove, imports, waiver changes, projection edits, locally sta
 
 ## Yahoo readiness
 
-Yahoo application authorization is intentionally the next phase. The persistence layer is provider-neutral and already records Yahoo as a source when future Yahoo refreshes are applied.
+Yahoo application authorization was deferred in the initial v2.2 merge. The follow-up review implementation adds Site-side OAuth, encrypted per-user token storage, read-only Fantasy endpoints, and sync-run history. A live Yahoo sync still requires the owner's Site secrets and Yahoo application configuration.
 
 Yahoo secrets/tokens must not be stored in browser state or committed to Git. They will be handled by the Site worker and owner-managed Site secrets.
