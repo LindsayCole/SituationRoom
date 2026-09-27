@@ -172,6 +172,8 @@ The production build packages:
 - `.openai/hosting.json`
 - generated D1 migration SQL and metadata under `drizzle/`, also copied into the Worker build output
 
+The original `0000_situation_room_persistence` migration is retained for existing databases. `0001_yahoo_auth_and_history` adds Yahoo token tables and the revision uniqueness guard. Existing state rows are preserved during this upgrade.
+
 ## Deployment
 
 This repository is intended to be published through **ChatGPT Sites**, not operated as a standalone Node server.

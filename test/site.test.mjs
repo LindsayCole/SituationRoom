@@ -22,10 +22,19 @@ test('Site saves reject invalid state, recognize retries, and keep concurrent hi
   });
   try {
     const db = await mf.getD1Database('DB');
-    const migration = await readFile('dist/dead_puck_situation_room/drizzle/0000_foamy_talkback.sql', 'utf8');
-    for (const statement of migration.split('--> statement-breakpoint').map((part) => part.trim()).filter(Boolean)) {
+    const baseline = await readFile('dist/dead_puck_situation_room/drizzle/0000_situation_room_persistence.sql', 'utf8');
+    for (const statement of baseline.split(';').map((part) => part.trim()).filter(Boolean)) {
       await db.prepare(statement).run();
     }
+    await db.prepare(`INSERT INTO situation_room_state
+      (owner_id, state_json, revision, created_at, updated_at)
+      VALUES ('legacy-owner', '{}', 1, '2026-09-01', '2026-09-01')`).run();
+    const upgrade = await readFile('dist/dead_puck_situation_room/drizzle/0001_yahoo_auth_and_history.sql', 'utf8');
+    for (const statement of upgrade.replaceAll('--> statement-breakpoint', '').split(';').map((part) => part.trim()).filter(Boolean)) {
+      await db.prepare(statement).run();
+    }
+    const legacy = await db.prepare(`SELECT revision FROM situation_room_state WHERE owner_id = 'legacy-owner'`).first();
+    assert.equal(legacy.revision, 1);
     const endpoint = 'http://localhost:8787/api/state';
     const state = (movesThisWeek) => ({ roster: [], waivers: [], schedule: {},
       selectedDate: '2026-09-26', movesThisWeek, yahoo: {} });

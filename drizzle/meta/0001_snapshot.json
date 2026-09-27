@@ -1,8 +1,8 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "16ec76f7-544f-47d1-bb40-644b588ed2c4",
-  "prevId": "00000000-0000-0000-0000-000000000000",
+  "id": "00ac5530-91ce-48b8-839e-7207d911eee8",
+  "prevId": "16ec76f7-544f-47d1-bb40-644b588ed2c4",
   "tables": {
     "situation_room_changes": {
       "name": "situation_room_changes",
@@ -98,6 +98,14 @@
           "columns": [
             "owner_id",
             "client_change_id"
+          ],
+          "isUnique": true
+        },
+        "idx_situation_room_changes_owner_revision": {
+          "name": "idx_situation_room_changes_owner_revision",
+          "columns": [
+            "owner_id",
+            "revision"
           ],
           "isUnique": true
         },
@@ -231,6 +239,68 @@
           "isUnique": false
         }
       },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "situation_room_yahoo_oauth_states": {
+      "name": "situation_room_yahoo_oauth_states",
+      "columns": {
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "owner_id": {
+          "name": "owner_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "situation_room_yahoo_tokens": {
+      "name": "situation_room_yahoo_tokens",
+      "columns": {
+        "owner_id": {
+          "name": "owner_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "encrypted_token": {
+          "name": "encrypted_token",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
       "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
