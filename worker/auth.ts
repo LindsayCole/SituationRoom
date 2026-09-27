@@ -8,10 +8,9 @@ export interface AuthUser {
 const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
 
 export function getAuthenticatedUser(request: Request): AuthUser | null {
-  const userId = request.headers.get("oai-authenticated-user-id");
-  const email = request.headers.get("oai-authenticated-user-email");
+  const email = request.headers.get("oai-authenticated-user-email")?.trim();
 
-  if (userId && email) {
+  if (email && email.includes("@")) {
     const encodedName = request.headers.get("oai-authenticated-user-full-name");
     const encoding = request.headers.get("oai-authenticated-user-full-name-encoding");
     const displayName =
@@ -19,7 +18,9 @@ export function getAuthenticatedUser(request: Request): AuthUser | null {
         ? safeDecode(encodedName) ?? email
         : email;
 
-    return { userId, email, displayName, isLocalDev: false };
+    // Sites guarantees the email header for signed-in visitors, but does not
+    // guarantee an ID header. Keep the same D1 owner key if an ID appears later.
+    return { userId: email.toLowerCase(), email, displayName, isLocalDev: false };
   }
 
   if (LOCAL_HOSTS.has(new URL(request.url).hostname)) {
