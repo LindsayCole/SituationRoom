@@ -119,6 +119,8 @@ td input{width:100%;min-width:80px}
 }
 .import-box.compact{grid-template-columns:minmax(240px,.75fr) 1.6fr auto;margin-top:16px}
 .import-box p{margin:0;color:var(--muted)}
+.import-review{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:12px 14px;margin:12px 0;border:1px solid rgba(247,185,85,.45);border-radius:10px;background:rgba(247,185,85,.08);color:#ffe3ae}
+.import-review[hidden]{display:none}
 code{color:#b9f4ef;background:#0b1f2a;padding:2px 5px;border-radius:5px}
 .wide-table{min-width:980px}
 .rank-badge{
@@ -173,6 +175,7 @@ footer{display:flex;justify-content:space-between;gap:20px;color:#678093;font-si
   .week-grid{grid-template-columns:repeat(2,1fr)}
   .priority-grid{grid-template-columns:repeat(2,1fr)}
   .import-box,.import-box.compact{grid-template-columns:1fr}
+  .import-review{flex-direction:column;align-items:stretch}
 }
 .yahoo-attribution{margin-top:18px}
 .source-yahoo{color:#d4c4ff}

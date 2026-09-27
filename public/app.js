@@ -1427,19 +1427,35 @@ $('#searchYahooPlayersBtn').addEventListener('click',searchYahooPlayers);
 $('#syncLeagueRostersBtn').addEventListener('click',syncLeagueRosters);
 $('#leagueRosterTeamSelect').addEventListener('change',renderLeagueRosters);
 $('#leagueRosterSearch').addEventListener('input',renderLeagueRosters);
+let leagueRosterImportDraft=null;
 $('#importLeagueRosterBtn').addEventListener('click',()=>{
   const name=$('#leagueRosterTeamSelect').value;
-  const {players,errors}=parseRosterSnapshotLines($('#leagueRosterImport').value);
+  const raw=$('#leagueRosterImport').value;
+  const {players,errors}=parseRosterSnapshotLines(raw);
   if (!name || !players.length || errors.length) {
     alert(errors.length?`Invalid roster lines: ${errors.join(', ')}.`:'Choose a team and enter at least one valid player.');
     return;
   }
-  if (!confirm(`Replace the tracked roster for ${name} with ${players.length} players? This does not change Yahoo.`)) return;
-  state.leagueRosters=state.leagueRosters.filter(team=>team.name!==name);
-  state.leagueRosters.push({teamKey:null,name,source:'Manual import',updatedAt:new Date().toISOString(),players:players.map(normalizeLoadedPlayer)});
-  saveState({source:'manual',action:'league-roster-import',entityType:'team',entityId:name,metadata:{count:players.length}});
+  leagueRosterImportDraft={name,raw,players};
+  $('#leagueRosterImportReviewText').textContent=`Review: replace ${name}'s tracked roster with ${players.length} players. Yahoo will not change.`;
+  $('#leagueRosterImportReview').hidden=false;
+});
+$('#confirmLeagueRosterImportBtn').addEventListener('click',()=>{
+  const draft=leagueRosterImportDraft;
+  if (!draft || draft.raw!==$('#leagueRosterImport').value || draft.name!==$('#leagueRosterTeamSelect').value) {
+    $('#leagueRosterImportReviewText').textContent='The team or import text changed. Review the import again.';
+    return;
+  }
+  state.leagueRosters=state.leagueRosters.filter(team=>team.name!==draft.name);
+  state.leagueRosters.push({teamKey:null,name:draft.name,source:'Manual import',updatedAt:new Date().toISOString(),players:draft.players.map(normalizeLoadedPlayer)});
+  saveState({source:'manual',action:'league-roster-import',entityType:'team',entityId:draft.name,metadata:{count:draft.players.length}});
+  leagueRosterImportDraft=null;
+  $('#leagueRosterImportReview').hidden=true;
   renderAll();
 });
+$('#cancelLeagueRosterImportBtn').addEventListener('click',()=>{leagueRosterImportDraft=null;$('#leagueRosterImportReview').hidden=true;});
+$('#leagueRosterImport').addEventListener('input',()=>{leagueRosterImportDraft=null;$('#leagueRosterImportReview').hidden=true;});
+$('#leagueRosterTeamSelect').addEventListener('change',()=>{leagueRosterImportDraft=null;$('#leagueRosterImportReview').hidden=true;});
 $('#yahooPlayerSearch').addEventListener('keydown',e=>{if(e.key==='Enter')searchYahooPlayers();});
 $('#waiverFilterInput').addEventListener('input',renderWaivers);
 $('#waiverPositionFilter').addEventListener('change',renderWaivers);
@@ -1450,7 +1466,31 @@ $('#disconnectYahooBtn').addEventListener('click',async()=>{if(!yahooStatus.conn
 $('#importWaiversBtn').addEventListener('click',()=>{const players=parsePlayerLines($('#waiverImport').value);if(!players.length){alert('No valid waiver lines found.');return;}state.waivers=players;saveState({source:'manual',action:'waiver-import',metadata:{count:players.length}});renderAll();});
 $('#clearWaiversBtn').addEventListener('click',()=>{if(confirm('Clear the stored waiver candidate pool?')){const count=state.waivers.length;state.waivers=[];saveState({source:'manual',action:'waiver-clear',metadata:{count}});renderAll();}});
 $('#addRosterRowBtn').addEventListener('click',()=>{const player=normalizeLoadedPlayer({id:makeUuid(),name:'New player',team:'',positions:['C'],fppg:0,core:false,canDrop:true,selectedPosition:'BN',source:'manual',projectionSource:'unset'});state.roster.push(player);saveState({source:'manual',action:'roster-add',entityType:'player',entityId:player.id,after:player});renderAll();});
-$('#importRosterBtn').addEventListener('click',()=>{const {players,errors}=parseRosterSnapshotLines($('#rosterImport').value);if(!players.length || errors.length){alert(errors.length?`Invalid roster lines: ${errors.join(', ')}.`:'No valid roster lines found.');return;}if(players.length>22){alert('This league has at most 22 roster slots, including reserve.');return;}if(!confirm(`Replace the stored roster with ${players.length} imported players? This does not change Yahoo.`))return;state.roster=players.map(normalizeLoadedPlayer);state.yahoo.rosterSource='Manual screenshot import';saveState({source:'manual',action:'roster-import',metadata:{count:players.length,source:'user-supplied roster screenshot'}});renderAll();});
+let rosterImportDraft=null;
+$('#importRosterBtn').addEventListener('click',()=>{
+  const raw=$('#rosterImport').value;
+  const {players,errors}=parseRosterSnapshotLines(raw);
+  if (!players.length || errors.length) {alert(errors.length?`Invalid roster lines: ${errors.join(', ')}.`:'No valid roster lines found.');return;}
+  if (players.length>22) {alert('This league has at most 22 roster slots, including reserve.');return;}
+  rosterImportDraft={raw,players};
+  $('#rosterImportReviewText').textContent=`Review: replace your stored roster with ${players.length} players. This does not change Yahoo.`;
+  $('#rosterImportReview').hidden=false;
+});
+$('#confirmRosterImportBtn').addEventListener('click',()=>{
+  const draft=rosterImportDraft;
+  if (!draft || draft.raw!==$('#rosterImport').value) {
+    $('#rosterImportReviewText').textContent='The import text changed. Review the import again.';
+    return;
+  }
+  state.roster=draft.players.map(normalizeLoadedPlayer);
+  state.yahoo.rosterSource='Manual screenshot import';
+  saveState({source:'manual',action:'roster-import',metadata:{count:draft.players.length,source:'user-supplied roster screenshot'}});
+  rosterImportDraft=null;
+  $('#rosterImportReview').hidden=true;
+  renderAll();
+});
+$('#cancelRosterImportBtn').addEventListener('click',()=>{rosterImportDraft=null;$('#rosterImportReview').hidden=true;});
+$('#rosterImport').addEventListener('input',()=>{rosterImportDraft=null;$('#rosterImportReview').hidden=true;});
 $('#movesUsedInput').addEventListener('change',e=>{const before=currentMovesUsed();state.movesThisWeek=Math.max(0,Math.min(league.maxAddsPerWeek,Number(e.target.value)||0));state.movesWeekStart=mondayOf(isoDate(new Date()));saveState({source:'manual',action:'moves-used-edit',before:{movesThisWeek:before},after:{movesThisWeek:state.movesThisWeek,weekStart:state.movesWeekStart}});renderAll();});
 $('#copyBriefBtn').addEventListener('click',async()=>{try{await navigator.clipboard.writeText(buildBrief());$('#copyStatus').textContent='Situation Brief copied. Paste it into our ChatGPT conversation.';}catch{const ta=document.createElement('textarea');ta.value=buildBrief();document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove();$('#copyStatus').textContent='Situation Brief copied.';}});
 $('#exportBtn').addEventListener('click',exportState);

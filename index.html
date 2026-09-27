@@ -100,6 +100,7 @@
         <div class="panel-head"><div><div class="eyebrow">ROSTER CONTROL</div><h2>My roster</h2></div><button class="btn" id="addRosterRowBtn">Add player</button></div>
         <div class="table-wrap"><table class="wide-table"><thead><tr><th>Player</th><th>Team / elig.</th><th>Yahoo slot</th><th>Status</th><th>Projection</th><th>Yahoo pts</th><th>Snapshot pts</th><th>Owned</th><th>Goalie start %</th><th>Core</th><th>Can drop</th><th></th></tr></thead><tbody id="rosterTable"></tbody></table></div>
         <div class="import-box compact"><div><h3>Bulk roster import</h3><p><code>Name | TEAM | eligible positions | lineup slot | screenshot points | rostered %</code>. Last two columns are optional reference data, not projections. Replaces the stored roster.</p></div><textarea id="rosterImport" rows="5" placeholder="Nick Suzuki | MTL | C | C | 377.50 | 100"></textarea><button class="btn btn-primary" id="importRosterBtn">Replace roster</button></div>
+        <div class="import-review" id="rosterImportReview" hidden><span id="rosterImportReviewText"></span><div class="row-actions"><button class="btn btn-primary" id="confirmRosterImportBtn">Confirm replacement</button><button class="btn" id="cancelRosterImportBtn">Cancel</button></div></div>
       </section>
 
       <section class="panel tab-panel" id="panel-league-rosters">
@@ -111,6 +112,7 @@
         </div>
         <div class="table-wrap"><table class="wide-table"><thead><tr><th>Player</th><th>NHL team</th><th>Eligible</th><th>Lineup slot</th><th>Source</th></tr></thead><tbody id="leagueRosterTable"></tbody></table></div>
         <div class="import-box compact"><div><h3>Manual team roster</h3><p>Use the same roster format as My Roster. Import replaces only the selected team's tracked roster. A player found here is rostered; missing players remain unverified until Yahoo confirms availability.</p></div><textarea id="leagueRosterImport" rows="5" placeholder="Player Name | BOS | C/RW | BN"></textarea><button class="btn" id="importLeagueRosterBtn">Import team roster</button></div>
+        <div class="import-review" id="leagueRosterImportReview" hidden><span id="leagueRosterImportReviewText"></span><div class="row-actions"><button class="btn btn-primary" id="confirmLeagueRosterImportBtn">Confirm team replacement</button><button class="btn" id="cancelLeagueRosterImportBtn">Cancel</button></div></div>
       </section>
 
       <section class="panel tab-panel" id="panel-yahoo">
