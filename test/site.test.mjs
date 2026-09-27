@@ -29,9 +29,11 @@ test('Site saves reject invalid state, recognize retries, and keep concurrent hi
     await db.prepare(`INSERT INTO situation_room_state
       (owner_id, state_json, revision, created_at, updated_at)
       VALUES ('legacy-owner', '{}', 1, '2026-09-01', '2026-09-01')`).run();
-    const upgrade = await readFile('dist/dead_puck_situation_room/drizzle/0001_yahoo_auth_and_history.sql', 'utf8');
-    for (const statement of upgrade.replaceAll('--> statement-breakpoint', '').split(';').map((part) => part.trim()).filter(Boolean)) {
-      await db.prepare(statement).run();
+    for (const name of ['0001_change_revision_uniqueness', '0002_revision_snapshots', '0003_yahoo_auth_and_history']) {
+      const upgrade = await readFile(`dist/dead_puck_situation_room/drizzle/${name}.sql`, 'utf8');
+      for (const statement of upgrade.replaceAll('--> statement-breakpoint', '').split(';').map((part) => part.trim()).filter(Boolean)) {
+        await db.prepare(statement).run();
+      }
     }
     const legacy = await db.prepare(`SELECT revision FROM situation_room_state WHERE owner_id = 'legacy-owner'`).first();
     assert.equal(legacy.revision, 1);
@@ -67,11 +69,14 @@ test('Site saves reject invalid state, recognize retries, and keep concurrent hi
     assert.deepEqual(raced.map((response) => response.status).sort(), [200, 409]);
     const changes = await (await mf.dispatchFetch('http://localhost:8787/api/changes')).json();
     assert.deepEqual(changes.changes.map((change) => change.revision), [2, 1]);
+    const snapshots = await db.prepare(`SELECT revision FROM situation_room_revisions
+      WHERE owner_id = 'local-dead-puck-user' ORDER BY revision DESC`).all();
+    assert.deepEqual(snapshots.results.map((row) => row.revision), [2, 1]);
     assert.ok(changes.changes[0].before);
     assert.ok(changes.changes[0].after);
     const olderRetry = await put(0, 0, 'initial');
-    assert.equal(olderRetry.status, 200);
-    assert.equal((await olderRetry.json()).currentRevision, 2);
+    assert.equal(olderRetry.status, 409);
+    assert.equal((await olderRetry.json()).duplicateRevision, 1);
     const yahooStatus = await (await mf.dispatchFetch('http://localhost:8787/api/yahoo/status')).json();
     assert.equal(yahooStatus.configured, false);
     assert.equal((await mf.dispatchFetch('http://localhost:8787/api/yahoo/login')).status, 503);

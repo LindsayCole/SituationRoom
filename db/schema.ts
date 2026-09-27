@@ -1,4 +1,4 @@
-import { index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { index, integer, primaryKey, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 export const situationRoomState = sqliteTable("situation_room_state", {
   ownerId: text("owner_id").primaryKey().notNull(),
@@ -37,6 +37,17 @@ export const situationRoomSyncRuns = sqliteTable("situation_room_sync_runs", {
   summaryJson: text("summary_json"),
   errorText: text("error_text"),
 }, (table) => [index("idx_situation_room_sync_owner_started").on(table.ownerId, table.startedAt)]);
+
+export const situationRoomRevisions = sqliteTable("situation_room_revisions", {
+  ownerId: text("owner_id").notNull(),
+  revision: integer("revision").notNull(),
+  stateJson: text("state_json").notNull(),
+  changeId: text("change_id").notNull(),
+  createdAt: text("created_at").notNull(),
+}, (table) => [
+  primaryKey({ columns: [table.ownerId, table.revision] }),
+  index("idx_situation_room_revisions_owner_created").on(table.ownerId, table.createdAt),
+]);
 
 export const situationRoomYahooTokens = sqliteTable("situation_room_yahoo_tokens", {
   ownerId: text("owner_id").primaryKey().notNull(),

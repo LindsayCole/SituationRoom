@@ -203,3 +203,132 @@ Roster edits, add/remove, imports, waiver changes, projection edits, locally sta
 Yahoo application authorization was deferred in the initial v2.2 merge. The follow-up review implementation adds Site-side OAuth, encrypted per-user token storage, read-only Fantasy endpoints, and sync-run history. A live Yahoo sync still requires the owner's Site secrets and Yahoo application configuration.
 
 Yahoo secrets/tokens must not be stored in browser state or committed to Git. They will be handled by the Site worker and owner-managed Site secrets.
+
+
+# v2.2.1 post-Sites bug review
+
+Review date: 2026-09-26
+
+This section supersedes older operational statements in the historical v1/v2/v2.1 sections above. The active deployment target is ChatGPT Sites, not the retired standalone Node server.
+
+## Defects found and fixed
+
+### 17. Yahoo status renderer could crash application startup
+**Severity:** Critical runtime.
+
+The browser referenced a nonexistent `#yahooPoolSummary` element during Yahoo-status rendering. The actual element is `#waiverPoolSummary`.
+
+**v2.2.1 fix:** ownership of the waiver summary is kept in the waiver renderer and an automated DOM-selector contract test verifies every literal ID queried by `app.js` exists in `index.html`.
+
+### 18. Save retries could be rejected before idempotency was recognized
+**Severity:** High persistence correctness.
+
+The state endpoint checked the base revision before checking whether the supplied client change ID had already succeeded. A response lost after a successful write could therefore make the legitimate retry look like a stale conflict.
+
+**v2.2.1 fix:** duplicate client change IDs are resolved before ordinary stale-revision handling. If newer state exists after that duplicate, the client receives a conflict instead of a false success.
+
+### 19. Concurrent writers could create misleading change history
+**Severity:** High persistence correctness.
+
+The compare-and-swap state update and append-only history insert ran in one D1 batch, but there was no uniqueness rule preventing two writers from targeting the same owner/revision.
+
+**v2.2.1 fix:** `(owner_id, revision)` is unique in the change table. A losing concurrent write fails the D1 transaction atomically and is surfaced as HTTP 409.
+
+### 20. Client save failures could allow later changes to skip ahead
+**Severity:** High persistence/audit.
+
+The old promise chain swallowed a failed save before processing later full-state snapshots. The eventual current state could be correct while an intermediate audit event disappeared.
+
+**v2.2.1 fix:** writes use an ordered pending-save queue. The queue stops on failure and is retained in emergency recovery state until safely retried.
+
+### 21. Emergency recovery was written but not restored
+**Severity:** High recovery.
+
+The browser created a recovery copy after a failed save, but startup did not consume it.
+
+**v2.2.1 fix:** recovery is replayed before empty-state initialization when safe. If the Site has a newer revision, the recovered view is preserved without overwriting D1 and the UI exposes explicit retry/reload controls.
+
+### 22. New Sites began with stale sample players
+**Severity:** High data accuracy.
+
+The seed contained three historical player records, including potentially stale team information.
+
+**v2.2.1 fix:** the authoritative seed roster and waiver pool are empty. Real data must come from migration, manual entry/import, or future Yahoo sync.
+
+### 23. Missing projections were treated as real zeroes
+**Severity:** High recommendation accuracy.
+
+Blank manual FPPG values could become `0` with a manual-projection flag, and an unprojected roster player could therefore look worthless in add/drop analysis.
+
+**v2.2.1 fix:** missing projection state is explicit. Clearing an FPPG returns it to `unset`; projected-point KPIs are withheld when roster coverage is incomplete; add/drop net value is blocked until active/bench projections are complete; Situation Brief exports unknown projection values as `null`.
+
+### 24. Negative bench leakage was possible
+**Severity:** Medium analytics.
+
+A negative projected player correctly left out of the lineup could reduce the reported leakage below zero.
+
+**v2.2.1 fix:** leakage represents only positive expected value blocked by lineup congestion.
+
+### 25. Historical schedule refresh could validate the wrong week
+**Severity:** High waiver accuracy.
+
+A single global refresh timestamp was used as proof that whatever week was selected had schedule data.
+
+**v2.2.1 fix:** schedule readiness requires the complete selected seven-day date window. Missing dates are fetched individually. If all seven dates cannot be confirmed, existing stored schedule data is not replaced.
+
+### 26. Zero-game dates were indistinguishable from missing dates
+**Severity:** Medium presentation/data quality.
+
+The UI used game-count truthiness, so a confirmed zero-game NHL date displayed as missing data.
+
+**v2.2.1 fix:** date-key presence determines whether schedule data is loaded; a confirmed off day displays as 0 games.
+
+### 27. Retired Yahoo routes produced unexplained 404s
+**Severity:** Medium/incomplete integration.
+
+The frontend still contained the future Yahoo workflow while the Sites worker intentionally did not yet implement OAuth/data routes.
+
+**v2.2.1 fix:** Yahoo controls remain disabled until configured and the worker returns explicit `501 YAHOO_NOT_CONFIGURED` responses for dormant Yahoo routes.
+
+### 28. Sites conversion dropped static security headers
+**Severity:** Medium security hygiene.
+
+API routes used Hono security middleware, but static HTML/assets no longer inherited the old local server's CSP/header policy.
+
+**v2.2.1 fix:** Site asset responses now apply CSP, `nosniff`, same-origin referrer policy, frame denial and a restrictive permissions policy.
+
+### 29. Reset audit payload could duplicate the entire application state
+**Severity:** Medium reliability.
+
+A reset wrote the full replacement state plus a full `before` copy into the change event, risking the request body limit on a mature season dataset.
+
+**v2.2.1 fix:** reset history records compact before/after counts instead of duplicating the full state.
+
+## Current automated validation
+
+The v2.2.1 suite now covers optimizer behavior, goalie uncertainty, reserve handling, missing projections, negative leakage, schedule-window completeness, waiver guards, DOM selector contracts, Yahoo fallback contracts and persistence revision uniqueness.
+
+CI runs:
+- dependency installation
+- TypeScript/Sites-worker checks
+- browser JavaScript syntax checks
+- Node test suite
+- full ChatGPT Sites production build
+- external secret scanning
+
+## Deliberately not complete yet
+
+1. ChatGPT Sites has not yet been deployed from this repository, so production D1/auth behavior still needs a deployed smoke test.
+2. Yahoo OAuth and Site secrets are the next implementation phase.
+3. Live Yahoo XML shapes still need to be captured and converted into parser regression fixtures.
+4. Weekly acquisition count remains manual until Yahoo transaction parsing is implemented.
+5. Forward FPPG/projections remain manual until a provider/model is selected.
+6. Goalie starter probability remains manual until a confirmed/probable starter source is integrated.
+7. Matchup/standings context is not yet incorporated.
+8. Yahoo write operations remain absent.
+9. Official Yahoo Fantasy branding is still required before public deployment using Yahoo data.
+10. The v2.3 integration adds a committed npm lockfile and packaged D1 migrations. The private Site deployment and live Yahoo data remain to be checked separately.
+
+# v2.3 integration review
+
+The v2.2.1 persistence and data-quality fixes were reconciled with the Yahoo read-only integration. The Worker verifies that all required migration tables exist before serving persistent data, writes state/history/revision snapshots in one D1 batch, and computes changes from the stored state. The browser retains ordered saves and revision-aware recovery while Yahoo sync and sync history use the same persistence path. The four migrations apply in order to a legacy database, preserving its state.

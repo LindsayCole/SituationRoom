@@ -70,7 +70,7 @@ app.get("/api/health", async (context) => {
   await ensureSchema(context.env.DB);
   return context.json({
     ok: true,
-    version: "2.2.0-alpha.2",
+    version: "2.3.0-alpha.1",
     runtime: "chatgpt-sites",
     persistence: "d1",
   });
@@ -131,51 +131,58 @@ app.put("/api/state", async (context): Promise<Response> => {
   await ensureSchema(context.env.DB);
   const ownerId = context.get("user").userId;
   const now = new Date().toISOString();
-  const current = await context.env.DB.prepare(
-    `SELECT owner_id, state_json, revision, created_at, updated_at
-     FROM situation_room_state
-     WHERE owner_id = ?`,
-  )
-    .bind(ownerId)
-    .first<StateRow>();
-
-  const clientChangeId = cleanNullable(input.change?.clientChangeId, 160);
-  if (clientChangeId) {
-    const existing = await context.env.DB.prepare(
-      `SELECT revision, created_at FROM situation_room_changes
-       WHERE owner_id = ? AND client_change_id = ?`,
-    ).bind(ownerId, clientChangeId).first<{ revision: number; created_at: string }>();
-    if (existing) {
-      return context.json({ ok: true, duplicate: true, revision: existing.revision,
-        currentRevision: current?.revision ?? 0, updatedAt: existing.created_at });
-    }
-  }
-
-  const currentRevision = current?.revision ?? 0;
-  if (currentRevision !== baseRevision) {
-    return context.json(
-      {
-        error: "Situation Room state changed in another session.",
-        conflict: true,
-        revision: currentRevision,
-        state: current ? safeParseJson(current.state_json) : null,
-        updatedAt: current?.updated_at ?? null,
-      },
-      409,
-    );
-  }
-
-  const nextRevision = currentRevision + 1;
   const change = input.change ?? {};
-  const changeId = crypto.randomUUID();
   const source = cleanLabel(change.source, "manual", 40);
   const action = cleanLabel(change.action, "state-update", 80);
   const entityType = cleanNullable(change.entityType, 80);
   const entityId = cleanNullable(change.entityId, 160);
+  const clientChangeId = cleanNullable(change.clientChangeId, 160);
+  const metadataJson = encodeOptional(change.metadata);
+
+  if (clientChangeId) {
+    const duplicate = await context.env.DB.prepare(
+      `SELECT id, revision, created_at
+       FROM situation_room_changes
+       WHERE owner_id = ? AND client_change_id = ?`,
+    )
+      .bind(ownerId, clientChangeId)
+      .first<{ id: string; revision: number; created_at: string }>();
+
+    if (duplicate) {
+      const current = await readStateRow(context.env.DB, ownerId);
+      if (current && current.revision === duplicate.revision) {
+        return context.json({
+          ok: true,
+          duplicate: true,
+          revision: current.revision,
+          updatedAt: current.updated_at,
+          changeId: duplicate.id,
+        });
+      }
+      return conflictResponse(
+        context,
+        current,
+        "This save was already applied, but newer Site state now exists.",
+        { duplicate: true, duplicateRevision: duplicate.revision },
+      );
+    }
+  }
+
+  const current = await readStateRow(context.env.DB, ownerId);
+  const currentRevision = current?.revision ?? 0;
+  if (currentRevision !== baseRevision) {
+    return conflictResponse(
+      context,
+      current,
+      "Situation Room state changed in another session.",
+    );
+  }
+
+  const nextRevision = currentRevision + 1;
+  const changeId = crypto.randomUUID();
   const diff = stateDiff(current ? safeParseJson(current.state_json) : null, input.state);
   const beforeJson = JSON.stringify(diff.before);
   const afterJson = JSON.stringify(diff.after);
-  const metadataJson = encodeOptional(change.metadata);
 
   const writeState = current
     ? context.env.DB.prepare(
@@ -208,6 +215,11 @@ app.put("/api/state", async (context): Promise<Response> => {
     clientChangeId,
     now,
   );
+  const writeRevision = context.env.DB.prepare(
+    `INSERT INTO situation_room_revisions
+      (owner_id, revision, state_json, change_id, created_at)
+     SELECT ?, ?, ?, ?, ? WHERE changes() = 1`,
+  ).bind(ownerId, nextRevision, serializedState, changeId, now);
   const writeSync = source === "yahoo" && action === "yahoo-sync"
     ? context.env.DB.prepare(
         `INSERT INTO situation_room_sync_runs
@@ -217,48 +229,54 @@ app.put("/api/state", async (context): Promise<Response> => {
     : null;
 
   try {
-    const results = await context.env.DB.batch(writeSync ? [writeState, writeChange, writeSync] : [writeState, writeChange]);
+    const results = await context.env.DB.batch(writeSync
+      ? [writeState, writeChange, writeRevision, writeSync]
+      : [writeState, writeChange, writeRevision]);
     const stateWrite = results[0];
-    if (!stateWrite.meta.changes || !results[1].meta.changes) {
-      const latest = await context.env.DB.prepare(
-        `SELECT state_json, revision, updated_at FROM situation_room_state WHERE owner_id = ?`,
-      ).bind(ownerId).first<StateRow>();
-      return context.json(
-        {
-          error: "Situation Room state changed during save.",
-          conflict: true,
-          revision: latest?.revision ?? 0,
-          state: latest ? safeParseJson(latest.state_json) : null,
-          updatedAt: latest?.updated_at ?? null,
-        },
-        409,
+    if (!stateWrite.success || !stateWrite.meta.changes || !results[1].meta.changes || !results[2].meta.changes) {
+      const latest = await readStateRow(context.env.DB, ownerId);
+      return conflictResponse(
+        context,
+        latest,
+        "Situation Room state changed during save.",
       );
     }
   } catch (error) {
     if (isUniqueConstraint(error)) {
-      const existing = clientChangeId ? await context.env.DB.prepare(
-        `SELECT revision, created_at
-         FROM situation_room_changes
-         WHERE owner_id = ? AND client_change_id = ?`,
-      )
-        .bind(ownerId, clientChangeId)
-        .first<{ revision: number; created_at: string }>() : null;
-      if (existing) {
-        return context.json({
-          ok: true,
-          duplicate: true,
-          revision: existing.revision,
-          currentRevision: currentRevision,
-          updatedAt: existing.created_at,
-        });
+      if (clientChangeId) {
+        const duplicate = await context.env.DB.prepare(
+          `SELECT id, revision, created_at
+           FROM situation_room_changes
+           WHERE owner_id = ? AND client_change_id = ?`,
+        )
+          .bind(ownerId, clientChangeId)
+          .first<{ id: string; revision: number; created_at: string }>();
+        if (duplicate) {
+          const latest = await readStateRow(context.env.DB, ownerId);
+          if (latest && latest.revision === duplicate.revision) {
+            return context.json({
+              ok: true,
+              duplicate: true,
+              revision: latest.revision,
+              updatedAt: latest.updated_at,
+              changeId: duplicate.id,
+            });
+          }
+          return conflictResponse(
+            context,
+            latest,
+            "This save was already applied, but newer Site state now exists.",
+            { duplicate: true, duplicateRevision: duplicate.revision },
+          );
+        }
       }
-      const latest = await context.env.DB.prepare(
-        `SELECT state_json, revision, updated_at FROM situation_room_state WHERE owner_id = ?`,
-      ).bind(ownerId).first<StateRow>();
-      if (latest && latest.revision !== baseRevision) {
-        return context.json({ error: "Situation Room state changed during save.", conflict: true,
-          revision: latest.revision, state: safeParseJson(latest.state_json), updatedAt: latest.updated_at }, 409);
-      }
+
+      const latest = await readStateRow(context.env.DB, ownerId);
+      return conflictResponse(
+        context,
+        latest,
+        "Situation Room state changed during save.",
+      );
     }
     throw error;
   }
@@ -440,6 +458,16 @@ app.post("/api/yahoo/sync-failure", async (context) => {
   return context.json({ ok: true });
 });
 
+app.all("/api/yahoo/*", (context) => {
+  return context.json(
+    {
+      error: "Yahoo integration is not configured yet.",
+      code: "YAHOO_NOT_CONFIGURED",
+    },
+    501,
+  );
+});
+
 app.get("/api/nhl/schedule", async (context) => {
   const date = String(context.req.query("date") ?? "");
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
@@ -462,7 +490,22 @@ app.get("/api/nhl/schedule", async (context) => {
 app.notFound(async (context) => {
   const requestUrl = new URL(context.req.url);
   if (requestUrl.pathname !== "/api" && !requestUrl.pathname.startsWith("/api/")) {
-    return context.env.ASSETS.fetch(context.req.raw);
+    const asset = await context.env.ASSETS.fetch(context.req.raw);
+    const headers = new Headers(asset.headers);
+    headers.set("X-Content-Type-Options", "nosniff");
+    headers.set("Referrer-Policy", "same-origin");
+    headers.set("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+    if (headers.get("Content-Type")?.includes("text/html")) {
+      headers.set(
+        "Content-Security-Policy",
+        "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' https: data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'",
+      );
+    }
+    return new Response(asset.body, {
+      status: asset.status,
+      statusText: asset.statusText,
+      headers,
+    });
   }
   return context.json({ error: "API route was not found." }, 404);
 });
@@ -471,6 +514,39 @@ app.onError((error, context) => {
   console.error("Situation Room API error", error);
   return context.json({ error: "Situation Room could not complete the request." }, 500);
 });
+
+async function readStateRow(database: D1Database, ownerId: string) {
+  return database.prepare(
+    `SELECT owner_id, state_json, revision, created_at, updated_at
+     FROM situation_room_state
+     WHERE owner_id = ?`,
+  )
+    .bind(ownerId)
+    .first<StateRow>();
+}
+
+function conflictResponse(
+  context: any,
+  current: StateRow | null,
+  message: string,
+  extra: Record<string, unknown> = {},
+) {
+  return context.json(
+    {
+      error: message,
+      conflict: true,
+      revision: current?.revision ?? 0,
+      state: current ? safeParseJson(current.state_json) : null,
+      updatedAt: current?.updated_at ?? null,
+      ...extra,
+    },
+    409,
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
 
 function cleanLabel(value: unknown, fallback: string, max: number): string {
   const text = String(value ?? "").trim().slice(0, max);

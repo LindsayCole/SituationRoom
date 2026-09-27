@@ -6,6 +6,8 @@ import {
   candidateScheduleMetrics,
   dayAvailability,
   gamesOn,
+  hasProjectionValue,
+  hasScheduleWindow,
   isGoalie,
   isReserve,
   isoDate,
@@ -56,21 +58,8 @@ const league = {
   ]
 };
 
-function seedPlayer(name, team, positions) {
-  return {
-    id: makeUuid(), name, team, positions, fppg:0, core:true, canDrop:false,
-    selectedPosition:'BN', status:'', source:'seed', yahooPlayerKey:null,
-    yahooSeasonPoints:null, ownershipType:null,
-    startProbability: positions.includes('G') ? 0 : 1
-  };
-}
-
 const seedState = {
-  roster: [
-    seedPlayer('Nick Suzuki','MTL',['C']),
-    seedPlayer('Matt Boldy','MIN',['LW','RW']),
-    seedPlayer('Quinn Hughes','MIN',['D'])
-  ],
+  roster: [],
   waivers: [],
   movesThisWeek: 0,
   schedule: {},
@@ -82,7 +71,7 @@ const seedState = {
     lastSyncAt: null,
     rosterDate: null,
     availableCount: 0,
-    rosterSource: 'local'
+    rosterSource: 'Manual / stored'
   }
 };
 
@@ -98,10 +87,32 @@ function nullableNumber(v) {
 function esc(s) { return String(s ?? '').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c])); }
 function fmtDate(dateStr) { return new Date(`${dateStr}T12:00:00`).toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'}); }
 function fmtWhen(value) { return value ? new Date(value).toLocaleString() : 'Never'; }
-function hasProjection(p) { return p?.projectionSource && p.projectionSource !== 'unset' && Number.isFinite(Number(p.fppg)); }
+function hasProjection(p) { return hasProjectionValue(p); }
+function rosterProjectionComplete() {
+  return state.roster.filter(p=>!isReserve(p)).every(hasProjection);
+}
 function projectionLabel(p) {
   if (!hasProjection(p)) return 'Projection needed';
   return p.projectionSource === 'manual' ? 'Manual' : p.projectionSource;
+}
+
+function projectionInputValue(p) {
+  return hasProjection(p) ? String(Number(p.fppg)) : '';
+}
+
+function applyProjectionInput(player, rawValue) {
+  const raw=String(rawValue ?? '').trim();
+  if (!raw) {
+    player.fppg=0;
+    player.projectionSource='unset';
+    player.projectionUpdatedAt=null;
+    return;
+  }
+  const value=Number(raw);
+  if (!Number.isFinite(value)) return;
+  player.fppg=value;
+  player.projectionSource='manual';
+  player.projectionUpdatedAt=new Date().toISOString();
 }
 function ownershipLabel(p) {
   const raw = String(p?.ownershipType || '').toLowerCase();
@@ -122,17 +133,26 @@ function statusBadge(p) {
 function normalizeLoadedPlayer(p) {
   const positions = parsePositions((p.positions || []).join ? p.positions.join('/') : p.positions);
   const goalie = positions.includes('G');
+  const core=Boolean(p.core);
+  const yahooUndroppable=Boolean(p.yahooUndroppable);
+  const manualCanDrop=p.manualCanDrop !== undefined
+    ? Boolean(p.manualCanDrop)
+    : core
+      ? true
+      : p.canDrop !== false;
   return {
     id: p.id || makeUuid(),
     name: String(p.name || 'Unknown player'),
     team: String(p.team || '').toUpperCase(),
     positions,
     fppg: Number(p.fppg) || 0,
-    core: Boolean(p.core),
-    canDrop: p.canDrop !== false,
-    selectedPosition: String(p.selectedPosition || 'BN'),
-    status: String(p.status || ''),
-    source: p.source || 'local',
+    core,
+    manualCanDrop,
+    yahooUndroppable,
+    canDrop: !core && manualCanDrop && !yahooUndroppable,
+    selectedPosition: String(p.selectedPosition || 'BN').toUpperCase(),
+    status: String(p.status || '').toUpperCase(),
+    source: p.source || 'stored',
     yahooPlayerKey: p.yahooPlayerKey || null,
     yahooSeasonPoints: nullableNumber(p.yahooSeasonPoints),
     ownershipType: p.ownershipType || null,
@@ -142,28 +162,64 @@ function normalizeLoadedPlayer(p) {
     projectionSource: p.projectionSource || (p.source === 'manual' ? 'manual' : 'unset'),
     projectionUpdatedAt: p.projectionUpdatedAt || null,
     startProbability: goalie ? Math.max(0,Math.min(1,Number(p.startProbability)||0)) : 1,
-    goalieStartProbabilities: p.goalieStartProbabilities || {}
+    goalieStartProbabilities: p.goalieStartProbabilities && typeof p.goalieStartProbabilities === 'object'
+      ? p.goalieStartProbabilities
+      : {}
   };
 }
 
+function isValidIsoDate(value) {
+  const text=String(value || '');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return false;
+  const d=new Date(`${text}T12:00:00`);
+  return !Number.isNaN(d.getTime()) && isoDate(d)===text;
+}
+
+function normalizeSchedule(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  const out={};
+  for (const [date,value] of Object.entries(raw)) {
+    if (!isValidIsoDate(date) || !value || typeof value !== 'object' || Array.isArray(value)) continue;
+    const gamesRaw=Number(value.games);
+    const games=Number.isFinite(gamesRaw) ? Math.max(0,Math.trunc(gamesRaw)) : 0;
+    const teams=Array.isArray(value.teams)
+      ? [...new Set(value.teams.map(x=>String(x||'').trim().toUpperCase()).filter(Boolean))]
+      : [];
+    out[date]={games,teams};
+  }
+  return out;
+}
+
+function validTimestampOrNull(value) {
+  if (!value) return null;
+  const d=new Date(value);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
+}
+
 function migrateLegacy(legacy) {
-  const migrated = clone(seedState);
-  if (Array.isArray(legacy?.roster)) migrated.roster = legacy.roster.map(normalizeLoadedPlayer);
-  if (Array.isArray(legacy?.waivers)) migrated.waivers = legacy.waivers.map(normalizeLoadedPlayer);
-  if (legacy?.schedule && typeof legacy.schedule === 'object') migrated.schedule = legacy.schedule;
-  if (legacy?.scheduleFetchedAt) migrated.scheduleFetchedAt = legacy.scheduleFetchedAt;
-  if (legacy?.selectedDate) migrated.selectedDate = legacy.selectedDate;
-  if (Number.isFinite(Number(legacy?.movesThisWeek))) migrated.movesThisWeek = Math.max(0,Math.min(league.maxAddsPerWeek,Number(legacy.movesThisWeek)));
-  return migrated;
+  return normalizeState(legacy);
 }
 
 function normalizeState(parsed) {
+  const source = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  const moves=Number(source.movesThisWeek);
+  const rawYahoo=source.yahoo && typeof source.yahoo === 'object' && !Array.isArray(source.yahoo)
+    ? source.yahoo
+    : {};
   return {
     ...clone(seedState),
-    ...(parsed || {}),
-    roster: Array.isArray(parsed?.roster) ? parsed.roster.map(normalizeLoadedPlayer) : clone(seedState.roster),
-    waivers: Array.isArray(parsed?.waivers) ? parsed.waivers.map(normalizeLoadedPlayer) : [],
-    yahoo: {...clone(seedState.yahoo), ...(parsed?.yahoo || {})}
+    ...source,
+    roster: Array.isArray(source.roster) ? source.roster.filter(x=>x&&typeof x==='object'&&!Array.isArray(x)).map(normalizeLoadedPlayer) : clone(seedState.roster),
+    waivers: Array.isArray(source.waivers) ? source.waivers.filter(x=>x&&typeof x==='object'&&!Array.isArray(x)).map(normalizeLoadedPlayer) : [],
+    movesThisWeek:Number.isFinite(moves)?Math.max(0,Math.min(league.maxAddsPerWeek,Math.trunc(moves))):0,
+    schedule:normalizeSchedule(source.schedule),
+    scheduleFetchedAt:validTimestampOrNull(source.scheduleFetchedAt),
+    selectedDate:isValidIsoDate(source.selectedDate)?source.selectedDate:isoDate(new Date()),
+    yahoo:{
+      ...clone(seedState.yahoo),
+      ...rawYahoo,
+      lastSyncAt:validTimestampOrNull(rawYahoo.lastSyncAt)
+    }
   };
 }
 
@@ -179,64 +235,188 @@ function loadBrowserStateForMigration() {
   return null;
 }
 
+function readPendingRecovery() {
+  try {
+    const raw=localStorage.getItem(PENDING_RECOVERY_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch (err) {
+    console.warn('Pending recovery state could not be read.',err);
+    return null;
+  }
+}
+
 let state = clone(seedState);
 let stateRevision = 0;
 let stateUpdatedAt = null;
-let saveChain = Promise.resolve();
+let pendingSaves = [];
+let saveDrainPromise = null;
 let historyRows = [];
 let syncRows = [];
 let yahooStatus = { configured:false, connected:false, writeEnabled:false, readOnlyDefault:true };
-let recoveryQueue = readRecoveryQueue();
+let storageError = '';
+let storageConflict = false;
 
-function readRecoveryQueue() {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(PENDING_RECOVERY_KEY) || '[]');
-    return (Array.isArray(parsed) ? parsed : [parsed]).filter(x=>x && x.state && x.change);
-  } catch { return []; }
+function makeSaveEntry(change={}, snapshot=clone(state)) {
+  return {
+    snapshot,
+    change:{
+      source:change.source || 'manual',
+      action:change.action || 'state-update',
+      entityType:change.entityType || null,
+      entityId:change.entityId || null,
+      before:change.before,
+      after:change.after,
+      metadata:change.metadata,
+      clientChangeId:change.clientChangeId || makeUuid()
+    }
+  };
 }
 
-function writeRecoveryQueue() {
+function persistRecoveryCopy(failedAt=null) {
+  if (!pendingSaves.length) {
+    localStorage.removeItem(PENDING_RECOVERY_KEY);
+    return;
+  }
+  const latest=pendingSaves[pendingSaves.length-1];
+  const pendingChanges=pendingSaves.map(entry=>({
+    source:entry.change.source,
+    action:entry.change.action,
+    entityType:entry.change.entityType,
+    entityId:entry.change.entityId,
+    before:entry.change.before,
+    after:entry.change.after,
+    metadata:entry.change.metadata,
+    clientChangeId:entry.change.clientChangeId,
+    snapshot:entry.snapshot
+  }));
   try {
-    if (recoveryQueue.length) localStorage.setItem(PENDING_RECOVERY_KEY,JSON.stringify(recoveryQueue));
-    else localStorage.removeItem(PENDING_RECOVERY_KEY);
-    renderRecoveryNotice();
+    localStorage.setItem(PENDING_RECOVERY_KEY,JSON.stringify({
+      version:3,
+      state:latest.snapshot,
+      baseRevision:stateRevision,
+      pendingChanges,
+      failedAt:failedAt || new Date().toISOString()
+    }));
+  } catch (err) {
+    console.warn('Emergency recovery copy could not be written.',err);
+  }
+}
+
+function enterRecoveryConflict(recovery, message) {
+  state=normalizeState(recovery.state);
+  storageConflict=true;
+  storageError=message;
+  $('#saveStatus').textContent='Recovery conflict · browser copy loaded';
+}
+
+async function replayRecovery(recovery, hasStoredState) {
+  if (!recovery?.state) return true;
+  const desired=normalizeState(recovery.state);
+  const base=Number(recovery.baseRevision);
+  const hasBase=Number.isInteger(base) && base>=0;
+  const changes=Array.isArray(recovery.pendingChanges)
+    ? recovery.pendingChanges.filter(x=>x&&typeof x==='object')
+    : [];
+
+  // Compatibility with the earlier recovery format. It is safe to restore
+  // automatically only when there is no authoritative Site state yet.
+  if (!hasBase || !changes.length) {
+    if (hasStoredState) {
+      enterRecoveryConflict(
+        recovery,
+        'An older browser recovery copy exists alongside stored Site data. Export the recovered view if needed, then use “Reload Site state” to keep the authoritative version.'
+      );
+      return false;
+    }
+    state=desired;
+    const saved=await saveState({
+      source:'system',
+      action:'recovery-restore',
+      metadata:{recoveredFrom:recovery.failedAt || null}
+    });
+    if (saved) localStorage.removeItem(PENDING_RECOVERY_KEY);
+    return saved;
+  }
+
+  if (stateRevision < base) {
+    enterRecoveryConflict(
+      recovery,
+      'The recovery copy was created from a newer revision than this Site currently reports. It was not replayed automatically.'
+    );
+    return false;
+  }
+
+  let applied=0;
+  if (stateRevision > base) {
+    if (stateRevision-base > 250) {
+      enterRecoveryConflict(
+        recovery,
+        'The Site advanced too far beyond the recovery base to verify the pending change sequence safely.'
+      );
+      return false;
+    }
+    const history=await fetchJson('/api/changes?limit=250');
+    const byRevision=new Map((history.changes||[]).map(row=>[Number(row.revision),row]));
+    for (let i=0;i<changes.length;i++) {
+      const row=byRevision.get(base+i+1);
+      if (row?.clientChangeId && row.clientChangeId===changes[i].clientChangeId) applied++;
+      else break;
+    }
+    if (stateRevision !== base+applied) {
+      enterRecoveryConflict(
+        recovery,
+        'The Site contains changes that are not the verified prefix of this browser recovery queue. The recovered view is preserved, but it was not allowed to overwrite newer state.'
+      );
+      return false;
+    }
+  }
+
+  if (applied===changes.length) {
+    localStorage.removeItem(PENDING_RECOVERY_KEY);
     return true;
-  } catch (err) { console.warn('Browser recovery storage is unavailable.',err);return false; }
-}
+  }
 
-function renderRecoveryNotice() {
-  const notice=$('#recoveryNotice');
-  if (!notice) return;
-  notice.hidden=!recoveryQueue.length;
-  if (recoveryQueue.length) $('#recoveryText').textContent=`${recoveryQueue.length} recovery ${recoveryQueue.length===1?'copy':'copies'} remain. Download one before replacing newer Site data.`;
+  state=desired;
+  for (const change of changes.slice(applied)) {
+    pendingSaves.push(makeSaveEntry(change,normalizeState(change.snapshot || desired)));
+  }
+  persistRecoveryCopy(recovery.failedAt || null);
+  $('#saveStatus').textContent='Replaying recovered saves…';
+  const saved=await drainSaveQueue();
+  if (saved) localStorage.removeItem(PENDING_RECOVERY_KEY);
+  return saved;
 }
 
 async function loadPersistedState() {
   $('#saveStatus').textContent = 'Loading Site storage…';
+  const recovery=readPendingRecovery();
   const stored = await fetchJson('/api/state');
+
   if (stored.state) {
     state = normalizeState(stored.state);
     stateRevision = Number(stored.revision) || 0;
     stateUpdatedAt = stored.updatedAt || null;
-    recoveryQueue = recoveryQueue.filter(x=>JSON.stringify(x.state)!==JSON.stringify(stored.state));
-    writeRecoveryQueue();
-    const latest = recoveryQueue.at(-1);
-    if (latest && recoveryQueue.length===1 && latest.baseRevision===stateRevision) {
-      state=normalizeState(latest.state);
-      await saveState(latest.change);
-    }
     $('#saveStatus').textContent = `Saved to Site · rev ${stateRevision}`;
+    if (recovery?.state) await replayRecovery(recovery,true);
+    return;
+  }
+
+  stateRevision=0;
+  stateUpdatedAt=null;
+  if (recovery?.state) {
+    const restored=await replayRecovery(recovery,false);
+    if (!restored) throw new Error(storageError || 'Recovered Site state could not be saved.');
     return;
   }
 
   const browser = loadBrowserStateForMigration();
-  const pending = recoveryQueue.at(-1);
-  state = pending?.state ? normalizeState(pending.state) : browser?.state || clone(seedState);
-  await saveState({
+  state = browser?.state || clone(seedState);
+  const saved = await saveState({
     source:'system',
-    action:pending ? 'recover-unsaved-state' : browser ? 'migrate-browser-state' : 'initialize-state',
+    action:browser ? 'migrate-browser-state' : 'initialize-state',
     metadata:{browserSource:browser?.source || null}
   });
+  if (!saved) throw new Error(storageError || 'Initial Site state could not be saved.');
   if (browser) {
     localStorage.removeItem(STORAGE_KEY);
     localStorage.removeItem(LEGACY_STORAGE_KEY);
@@ -244,70 +424,69 @@ async function loadPersistedState() {
 }
 
 function saveState(change={}) {
-  const snapshot = clone(state);
-  const clientChangeId = change.clientChangeId || makeUuid();
-  const normalizedChange = {
-    source:change.source || 'manual',
-    action:change.action || 'state-update',
-    entityType:change.entityType || null,
-    entityId:change.entityId || null,
-    metadata:change.metadata,
-    clientChangeId
-  };
+  pendingSaves.push(makeSaveEntry(change));
+  persistRecoveryCopy();
+  $('#saveStatus').textContent = storageConflict ? 'Save blocked by conflict' : 'Saving to Site…';
+  return drainSaveQueue();
+}
 
-  $('#saveStatus').textContent = 'Saving to Site…';
-  saveChain = saveChain.catch(()=>{}).then(async()=>{
-    try {
-      const result = await fetchJson('/api/state',{
-        method:'PUT',
-        headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({
-          state:snapshot,
-          baseRevision:stateRevision,
-          change:normalizedChange
-        })
-      });
-      if (result.duplicate && Number(result.currentRevision)!==Number(result.revision)) {
-        const latest = await fetchJson('/api/state');
-        if (JSON.stringify(latest.state)!==JSON.stringify(snapshot)) {
-          throw Object.assign(new Error('The Site changed after this save. Review the recovery copy before continuing.'),{status:409});
-        }
-        result.revision=latest.revision;
-        result.updatedAt=latest.updatedAt;
+function drainSaveQueue() {
+  if (saveDrainPromise) return saveDrainPromise;
+  if (storageConflict) {
+    renderPersistenceStatus();
+    return Promise.resolve(false);
+  }
+
+  saveDrainPromise=(async()=>{
+    while (pendingSaves.length) {
+      const entry=pendingSaves[0];
+      try {
+        const result=await fetchJson('/api/state',{
+          method:'PUT',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({
+            state:entry.snapshot,
+            baseRevision:stateRevision,
+            change:entry.change
+          })
+        });
+
+        stateRevision=Number(result.revision) || stateRevision;
+        stateUpdatedAt=result.updatedAt || new Date().toISOString();
+        pendingSaves.shift();
+        storageError='';
+        storageConflict=false;
+        if (!result.duplicate) historyRows.unshift({
+          id:result.changeId || entry.change.clientChangeId,
+          revision:stateRevision,
+          source:entry.change.source,
+          action:entry.change.action,
+          entityType:entry.change.entityType,
+          entityId:entry.change.entityId,
+          metadata:entry.change.metadata || null,
+          clientChangeId:entry.change.clientChangeId,
+          createdAt:stateUpdatedAt
+        });
+        historyRows=historyRows.slice(0,100);
+        persistRecoveryCopy();
+        $('#saveStatus').textContent = `Saved to Site · rev ${stateRevision}`;
+        renderPersistenceStatus();
+        renderHistory();
+      } catch (err) {
+        storageError=err.message || 'Site save failed.';
+        storageConflict=err.status===409;
+        persistRecoveryCopy(new Date().toISOString());
+        $('#saveStatus').textContent = storageConflict
+          ? 'Save conflict · recovery copy kept in browser'
+          : 'Save failed · recovery copy kept in browser';
+        renderPersistenceStatus();
+        return false;
       }
-      stateRevision = Number(result.revision) || stateRevision;
-      stateUpdatedAt = result.updatedAt || new Date().toISOString();
-      recoveryQueue = recoveryQueue.filter(x=>x.change.clientChangeId!==clientChangeId && JSON.stringify(x.state)!==JSON.stringify(snapshot));
-      writeRecoveryQueue();
-      $('#saveStatus').textContent = `Saved to Site · rev ${stateRevision}`;
-      if (!result.duplicate) historyRows.unshift({
-        id:result.changeId || clientChangeId,
-        revision:stateRevision,
-        source:normalizedChange.source,
-        action:normalizedChange.action,
-        entityType:normalizedChange.entityType,
-        entityId:normalizedChange.entityId,
-        metadata:normalizedChange.metadata || null,
-        createdAt:stateUpdatedAt
-      });
-      historyRows = historyRows.slice(0,100);
-      renderPersistenceStatus();
-      renderHistory();
-      return result;
-    } catch (err) {
-      let recoveredLocally=true;
-      if (!recoveryQueue.some(x=>x.change.clientChangeId===clientChangeId)) {
-        recoveryQueue.push({state:snapshot,change:normalizedChange,baseRevision:stateRevision,failedAt:new Date().toISOString()});
-        recoveredLocally=writeRecoveryQueue();
-      }
-      $('#saveStatus').textContent = recoveredLocally
-        ? err.status===409 ? 'Save conflict · recovery copy kept in browser' : 'Save failed · recovery copy kept in browser'
-        : 'Save failed · download your edits before closing';
-      renderPersistenceStatus(err.message);
-      throw err;
     }
-  });
-  return saveChain;
+    return true;
+  })().finally(()=>{ saveDrainPromise=null; });
+
+  return saveDrainPromise;
 }
 
 async function fetchJson(url, options) {
@@ -380,6 +559,7 @@ function parseYahooPlayers(doc, source='yahoo') {
     const percentValue = percentEl ? nullableNumber(directText(percentEl,'value')) : null;
     const imageUrl = directText(el,'image_url') || nestedText(el,'headshot','url') || null;
     const waiverDate = ownershipEl ? (directText(ownershipEl,'waiver_date') || null) : null;
+    const yahooUndroppable = directText(el,'is_undroppable') === '1';
     players.push({
       id: makeUuid(),
       yahooPlayerKey: playerKey,
@@ -390,7 +570,9 @@ function parseYahooPlayers(doc, source='yahoo') {
       status,
       fppg: 0,
       core:false,
-      canDrop: directText(el,'is_undroppable') !== '1',
+      manualCanDrop:true,
+      yahooUndroppable,
+      canDrop: !yahooUndroppable,
       source,
       yahooSeasonPoints: Number.isFinite(seasonPoints) ? seasonPoints : null,
       ownershipType: ownershipEl ? directText(ownershipEl,'ownership_type') : null,
@@ -406,11 +588,22 @@ function parseYahooPlayers(doc, source='yahoo') {
   return players;
 }
 
+function playerFallbackIdentity(player) {
+  return `${String(player?.name||'').trim().toLowerCase()}|${String(player?.team||'').trim().toUpperCase()}`;
+}
+
+function findExistingPlayer(collection, incoming) {
+  if (incoming?.yahooPlayerKey) {
+    const keyed=collection.find(p=>p.yahooPlayerKey===incoming.yahooPlayerKey);
+    if (keyed) return keyed;
+  }
+  const identity=playerFallbackIdentity(incoming);
+  return collection.find(p=>playerFallbackIdentity(p)===identity) || null;
+}
+
 function mergeYahooRoster(yahooPlayers) {
-  const oldByKey = new Map(state.roster.filter(p=>p.yahooPlayerKey).map(p=>[p.yahooPlayerKey,p]));
-  const oldByName = new Map(state.roster.map(p=>[p.name.toLowerCase(),p]));
   return yahooPlayers.map(p=>{
-    const old = oldByKey.get(p.yahooPlayerKey) || oldByName.get(p.name.toLowerCase());
+    const old = findExistingPlayer(state.roster,p);
     return normalizeLoadedPlayer({
       ...p,
       id: old?.id || p.id,
@@ -418,7 +611,12 @@ function mergeYahooRoster(yahooPlayers) {
       projectionSource: old?.projectionSource || 'unset',
       projectionUpdatedAt: old?.projectionUpdatedAt || null,
       core: old?.core || false,
-      canDrop: p.canDrop && (old ? old.canDrop !== false : true),
+      manualCanDrop: old?.manualCanDrop !== undefined
+        ? old.manualCanDrop
+        : old?.core
+          ? true
+          : old?.canDrop !== false,
+      yahooUndroppable: Boolean(p.yahooUndroppable),
       startProbability: isGoalie(p) ? (Number(old?.startProbability)||0) : 1,
       goalieStartProbabilities: old?.goalieStartProbabilities || {}
     });
@@ -426,10 +624,8 @@ function mergeYahooRoster(yahooPlayers) {
 }
 
 function mergeYahooWaivers(yahooPlayers) {
-  const oldByKey = new Map(state.waivers.filter(p=>p.yahooPlayerKey).map(p=>[p.yahooPlayerKey,p]));
-  const oldByName = new Map(state.waivers.map(p=>[p.name.toLowerCase(),p]));
   return yahooPlayers.map(p=>{
-    const old = oldByKey.get(p.yahooPlayerKey) || oldByName.get(p.name.toLowerCase());
+    const old = findExistingPlayer(state.waivers,p);
     return normalizeLoadedPlayer({
       ...p,
       id: old?.id || p.id,
@@ -437,11 +633,46 @@ function mergeYahooWaivers(yahooPlayers) {
       projectionSource: old?.projectionSource || 'unset',
       projectionUpdatedAt: old?.projectionUpdatedAt || null,
       core:false,
-      canDrop:true,
+      manualCanDrop:true,
+      yahooUndroppable:Boolean(p.yahooUndroppable),
       startProbability: isGoalie(p) ? (Number(old?.startProbability)||0) : 1,
       goalieStartProbabilities: old?.goalieStartProbabilities || {}
     });
   });
+}
+
+function replaceYahooWaiverPool(yahooPlayers) {
+  const merged=mergeYahooWaivers(yahooPlayers);
+  const matchedIdentities=new Set(merged.map(playerFallbackIdentity));
+  const manualUnmatched=state.waivers.filter(p=>!p.yahooPlayerKey && !matchedIdentities.has(playerFallbackIdentity(p)));
+  return [...manualUnmatched,...merged];
+}
+
+function mergeYahooSearchIntoWaiverPool(yahooPlayers) {
+  const incoming=mergeYahooWaivers(yahooPlayers);
+  const incomingKeys=new Set(incoming.map(p=>p.yahooPlayerKey).filter(Boolean));
+  const incomingIdentities=new Set(incoming.map(playerFallbackIdentity));
+  const retained=state.waivers.filter(p=>{
+    if (p.yahooPlayerKey) return !incomingKeys.has(p.yahooPlayerKey);
+    return !incomingIdentities.has(playerFallbackIdentity(p));
+  });
+  return [...retained,...incoming];
+}
+
+function scheduleDaysFromResponse(data) {
+  const out={};
+  for (const day of (data?.gameWeek || [])) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(day?.date || ''))) continue;
+    const teams=[];
+    for (const g of (day.games || [])) {
+      const away=(g.awayTeam?.abbrev||'').toUpperCase();
+      const home=(g.homeTeam?.abbrev||'').toUpperCase();
+      if (away) teams.push(away);
+      if (home) teams.push(home);
+    }
+    out[day.date]={games:(day.games||[]).length,teams:[...new Set(teams)]};
+  }
+  return out;
 }
 
 async function refreshSchedule() {
@@ -451,22 +682,32 @@ async function refreshSchedule() {
   $('#scheduleStatus').textContent = 'NHL schedule: loading';
   try {
     const start = state.selectedDate || isoDate(new Date());
-    const data = await fetchJson(`/api/nhl/schedule?date=${encodeURIComponent(start)}`);
-    const schedule = {...state.schedule};
-    for (const day of (data.gameWeek || [])) {
-      const teams=[];
-      for (const g of (day.games || [])) {
-        const away=(g.awayTeam?.abbrev||'').toUpperCase();
-        const home=(g.homeTeam?.abbrev||'').toUpperCase();
-        if (away) teams.push(away);
-        if (home) teams.push(home);
-      }
-      schedule[day.date] = { games:(day.games||[]).length, teams:[...new Set(teams)] };
+    const required=Array.from({length:7},(_,i)=>addDays(start,i));
+    const first=await fetchJson(`/api/nhl/schedule?date=${encodeURIComponent(start)}`);
+    const fetched=scheduleDaysFromResponse(first);
+
+    let missing=required.filter(date=>!Object.prototype.hasOwnProperty.call(fetched,date));
+    for (const date of missing) {
+      const extra=await fetchJson(`/api/nhl/schedule?date=${encodeURIComponent(date)}`);
+      Object.assign(fetched,scheduleDaysFromResponse(extra));
     }
+
+    missing=required.filter(date=>!Object.prototype.hasOwnProperty.call(fetched,date));
+    if (missing.length) {
+      throw new Error(`NHL schedule response did not confirm these dates: ${missing.join(', ')}. Existing stored schedule was left unchanged.`);
+    }
+
+    const schedule={...state.schedule};
+    for (const date of required) schedule[date]=fetched[date];
     state.schedule = schedule;
     state.scheduleFetchedAt = new Date().toISOString();
-    saveState({source:'nhl',action:'schedule-refresh',metadata:{selectedDate:state.selectedDate,days:Object.keys(state.schedule).length}});
+    const saved=await saveState({
+      source:'nhl',
+      action:'schedule-refresh',
+      metadata:{selectedDate:start,dates:required}
+    });
     renderAll();
+    if (!saved) alert('The NHL schedule loaded into the recovery copy, but could not be saved to Site storage. Use History / Storage to retry.');
   } catch (err) {
     $('#scheduleStatus').textContent = 'NHL schedule: refresh failed';
     alert(`Could not load the NHL schedule. Saved data was not changed.\n\n${err.message}`);
@@ -489,18 +730,23 @@ async function loadHistory() {
   renderHistory();
 }
 
-function renderPersistenceStatus(errorText='') {
+function renderPersistenceStatus(errorText=storageError) {
   const pill=$('#siteStorageStatus');
   const status=$('#storageStatusText');
   const rev=$('#storageRevision');
   const updated=$('#storageUpdatedAt');
   if (!pill || !status || !rev || !updated) return;
 
+  const retryBtn=$('#retryStorageBtn');
+  const reloadBtn=$('#reloadSiteStateBtn');
+  if (retryBtn) retryBtn.hidden=!errorText || storageConflict;
+  if (reloadBtn) reloadBtn.hidden=!storageConflict;
+
   if (errorText) {
-    pill.textContent='Site storage: attention';
+    pill.textContent=storageConflict?'Site storage: conflict':'Site storage: attention';
     pill.className='status-pill status-warn';
     status.textContent=errorText;
-  } else if (recoveryQueue.length) {
+  } else if (pendingSaves.length || readPendingRecovery()) {
     pill.textContent='Site storage: unsaved edits';
     pill.className='status-pill status-warn';
     status.textContent='Recovery copies are waiting on this device. Review them before discarding.';
@@ -572,7 +818,7 @@ function renderYahooStatus() {
     panel.textContent = 'Connected · read sync ready';
     panel.className = 'status-pill good';
     connect.hidden = true; sync.hidden = false; disconnect.hidden = false; headerSync.hidden = false;
-    text.textContent = 'Yahoo is connected. Syncing reads your fantasy team and available-player data into the Site.';
+    text.textContent = 'Yahoo is connected. Syncing reads your fantasy team and available-player data into the stored Situation Room model.';
   }
   $('#writeAccessText').textContent = yahooStatus.writeEnabled
     ? 'Feature flag is enabled, but this v2 alpha still exposes no write endpoints. Yahoo approval must be confirmed first.'
@@ -582,11 +828,16 @@ function renderYahooStatus() {
   $('#leagueKeyValue').textContent = state.yahoo.leagueKey || '—';
   $('#rosterSourceValue').textContent = state.yahoo.rosterSource || 'local';
   $('#rosterDateValue').textContent = state.yahoo.rosterDate || '—';
-  $('#yahooRedirectUri').textContent = yahooStatus.redirectUri || 'Set YAHOO_REDIRECT_URI in Site secrets';
-  $('#yahooMissingConfig').textContent = yahooStatus.configured ? 'Configured' : yahooStatus.missingConfig?.join(', ') || 'Yahoo Site secrets missing';
-  $('#waiverPoolSummary').textContent = state.waivers.length
-    ? `${state.waivers.length} available players in local pool`
-    : 'No Yahoo player pool loaded yet';
+  $('#yahooRedirectUri').textContent = yahooStatus.redirectUri || 'Set YAHOO_REDIRECT_URI in Site settings';
+  $('#yahooMissingConfig').textContent = yahooStatus.configured ? 'Configured' : yahooStatus.missingConfig?.join(', ') || 'Yahoo Site settings missing';
+  const searchBtn=$('#searchYahooPlayersBtn');
+  const searchInput=$('#yahooPlayerSearch');
+  const positionInput=$('#yahooPositionSearch');
+  const yahooSearchReady=Boolean(yahooStatus.connected);
+  if (searchBtn) searchBtn.disabled=!yahooSearchReady;
+  if (searchInput) searchInput.disabled=!yahooSearchReady;
+  if (positionInput) positionInput.disabled=!yahooSearchReady;
+
 }
 
 async function syncYahoo() {
@@ -618,8 +869,7 @@ async function syncYahoo() {
     ]);
     const available = [...parseYahooPlayers(availableDoc0,'yahoo-available'), ...parseYahooPlayers(availableDoc50,'yahoo-available')];
     const seen = new Set();
-    const yahooWaivers = mergeYahooWaivers(available.filter(p=>p.yahooPlayerKey && !seen.has(p.yahooPlayerKey) && seen.add(p.yahooPlayerKey)));
-    const nextWaivers = [...state.waivers.filter(p=>!p.yahooPlayerKey),...yahooWaivers];
+    const nextWaivers = replaceYahooWaiverPool(available.filter(p=>p.yahooPlayerKey && !seen.has(p.yahooPlayerKey) && seen.add(p.yahooPlayerKey)));
 
     state.roster = nextRoster;
     state.waivers = nextWaivers;
@@ -629,8 +879,8 @@ async function syncYahoo() {
     state.yahoo.rosterDate = rosterDate;
     state.yahoo.availableCount = state.waivers.length;
     state.yahoo.rosterSource = 'Yahoo Fantasy';
-    await saveState({source:'yahoo',action:'yahoo-sync',metadata:{rosterCount:state.roster.length,availableCount:state.waivers.length,rosterDate}});
-    await loadHistory();
+    const saved=await saveState({source:'yahoo',action:'yahoo-sync',metadata:{rosterCount:state.roster.length,availableCount:state.waivers.length,rosterDate}});
+    if (!saved) throw new Error(storageError || 'Yahoo data loaded but could not be persisted.');
     renderAll();
     log.className = 'action-banner good';
     const rosterPoints = state.roster.filter(p=>p.yahooSeasonPoints !== null).length;
@@ -674,13 +924,11 @@ async function searchYahooPlayers() {
     });
     if (position) params.set('position',position);
     const doc = await fetchXml('/api/yahoo/available?' + params.toString());
-    const incoming = mergeYahooWaivers(parseYahooPlayers(doc,'yahoo-search'));
-    const manual = state.waivers.filter(p=>!p.yahooPlayerKey);
-    const byKey = new Map(state.waivers.filter(p=>p.yahooPlayerKey).map(p=>[p.yahooPlayerKey,p]));
-    for (const p of incoming) byKey.set(p.yahooPlayerKey,p);
-    state.waivers = [...manual, ...byKey.values()];
+    const incoming = parseYahooPlayers(doc,'yahoo-search');
+    state.waivers = mergeYahooSearchIntoWaiverPool(incoming);
     state.yahoo.availableCount = state.waivers.length;
-    await saveState({source:'yahoo',action:'yahoo-player-search',metadata:{query,position,matched:incoming.length}});
+    const saved=await saveState({source:'yahoo',action:'yahoo-player-search',metadata:{query,position,matched:incoming.length}});
+    if (!saved) throw new Error(storageError || 'Yahoo search results could not be persisted.');
     renderAll();
     $('#yahooSyncLog').className = 'action-banner good';
     $('#yahooSyncLog').textContent = incoming.length
@@ -707,15 +955,20 @@ function renderKPIs() {
   $('#kpiPriority').textContent = `#${league.waiverPriority}`;
   $('#kpiRoster').textContent = `${counts.activeBench} / ${ACTIVE_BENCH_CAPACITY}`;
   $('#kpiReserve').textContent = `${counts.reserve} reserve`;
-  $('#kpiUsable').textContent = state.scheduleFetchedAt ? w.usableGames.toFixed(1) : '—';
-  $('#kpiPoints').textContent = state.scheduleFetchedAt ? w.points.toFixed(1) : '—';
-  $('#kpiLeakage').textContent = state.scheduleFetchedAt ? w.leakage.toFixed(1) : '—';
+  const scheduleReady=hasScheduleWindow(state.schedule,state.selectedDate);
+  const projectionsReady=rosterProjectionComplete();
+  $('#kpiUsable').textContent = scheduleReady ? w.usableGames.toFixed(1) : '—';
+  $('#kpiPoints').textContent = scheduleReady && projectionsReady ? w.points.toFixed(1) : '—';
+  $('#kpiLeakage').textContent = scheduleReady && projectionsReady ? w.leakage.toFixed(1) : '—';
 }
 
 function renderScheduleStatus() {
-  $('#scheduleStatus').textContent = state.scheduleFetchedAt
+  const ready=hasScheduleWindow(state.schedule,state.selectedDate);
+  $('#scheduleStatus').textContent = ready && state.scheduleFetchedAt
     ? 'NHL schedule: ' + new Date(state.scheduleFetchedAt).toLocaleString([], {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})
-    : 'NHL schedule: not loaded';
+    : state.scheduleFetchedAt
+      ? 'NHL schedule: refresh selected week'
+      : 'NHL schedule: not loaded';
 }
 
 function renderToday() {
@@ -735,8 +988,9 @@ function renderToday() {
   const bySlot = new Map(r.starters.map(x=>[x.slotIndex,x.player]));
   league.activeSlots.forEach((slot,idx)=>{
     const p = bySlot.get(idx);
+    const projected=p ? hasProjection(p) : false;
     body.insertAdjacentHTML('beforeend', p
-      ? `<tr><td><span class="badge">${slot}</span></td><td><strong>${esc(p.name)}</strong></td><td>${esc(p.team)}</td><td>${esc((p.positions||[]).join('/'))}</td><td>${(Number(p.fppg)||0).toFixed(2)}</td><td>${(p.fppg*p.availability).toFixed(2)}</td></tr>`
+      ? `<tr><td><span class="badge">${slot}</span></td><td><strong>${esc(p.name)}</strong></td><td>${esc(p.team)}</td><td>${esc((p.positions||[]).join('/'))}</td><td>${projected?Number(p.fppg).toFixed(2):'—'}</td><td>${projected?(p.fppg*p.availability).toFixed(2):'—'}</td></tr>`
       : `<tr><td><span class="badge">${slot}</span></td><td class="muted">Open</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>`
     );
   });
@@ -744,19 +998,27 @@ function renderToday() {
   const attention = $('#todayBench');
   attention.className = 'stack-list';
   attention.innerHTML = '';
+  const missingProjection=r.scheduled.filter(p=>!hasProjection(p));
+  for (const p of missingProjection) {
+    attention.insertAdjacentHTML('beforeend',`<div class="stack-item"><div><strong>${esc(p.name)}</strong><div class="mini-note">${esc(p.team)} plays · projection needed</div></div><div><span class="badge">?</span></div></div>`);
+  }
   for (const p of r.blocked.sort((a,b)=>(b.fppg*b.availability)-(a.fppg*a.availability))) {
-    attention.insertAdjacentHTML('beforeend',`<div class="stack-item"><div><strong>${esc(p.name)}</strong><div class="mini-note">${esc(p.team)} · blocked by lineup congestion</div></div><div><strong>${(p.fppg*p.availability).toFixed(2)}</strong><div class="mini-note">expected pts</div></div></div>`);
+    const projected=hasProjection(p);
+    attention.insertAdjacentHTML('beforeend',`<div class="stack-item"><div><strong>${esc(p.name)}</strong><div class="mini-note">${esc(p.team)} · blocked by lineup congestion</div></div><div><strong>${projected?(p.fppg*p.availability).toFixed(2):'—'}</strong><div class="mini-note">${projected?'expected pts':'projection needed'}</div></div></div>`);
   }
   for (const p of r.goalieUnconfirmed) {
     attention.insertAdjacentHTML('beforeend',`<div class="stack-item"><div><strong>${esc(p.name)}</strong><div class="mini-note">${esc(p.team)} plays · goalie start unconfirmed</div></div><div><span class="badge">G</span></div></div>`);
   }
-  if (!r.blocked.length && !r.goalieUnconfirmed.length) {
+  if (!missingProjection.length && !r.blocked.length && !r.goalieUnconfirmed.length) {
     attention.className = 'stack-list empty-state';
     attention.textContent = 'No lineup congestion or unconfirmed goalie starts flagged.';
   }
 
   const banner = $('#todayActionBanner');
-  if (r.blocked.length) {
+  if (missingProjection.length) {
+    banner.className='action-banner warn';
+    banner.innerHTML=`<strong>Lineup ranking is provisional.</strong> ${missingProjection.length} scheduled player${missingProjection.length===1?' is':'s are'} missing a projection, so projected points and congestion value are incomplete.`;
+  } else if (r.blocked.length) {
     banner.className='action-banner warn';
     banner.innerHTML=`<strong>${r.blocked.length} usable player${r.blocked.length===1?' is':'s are'} blocked.</strong> About ${r.leakage.toFixed(1)} expected points are sitting outside active slots.`;
   } else if (r.goalieUnconfirmed.length) {
@@ -774,15 +1036,19 @@ function renderWeek() {
   wrap.innerHTML='';
   for (const d of w.days) {
     const cls=d.nightClass==='light'?'light-night':d.nightClass==='medium'?'medium-night':d.nightClass==='heavy'?'heavy-night':'';
-    wrap.insertAdjacentHTML('beforeend',`<article class="day-card ${cls}"><div class="date">${esc(fmtDate(d.date))}</div><div class="tiny">${d.games?`${d.games} NHL games · ${d.nightClass} night`:'No schedule data'}</div><div class="games">${d.expectedStarts.toFixed(1)}</div><div class="tiny">expected usable starts</div><div class="day-metrics"><div><span>Roster team games</span><strong>${d.scheduled.length}</strong></div><div><span>Blocked</span><strong>${d.blocked.length}</strong></div><div><span>Goalies TBD</span><strong>${d.goalieUnconfirmed.length}</strong></div><div><span>Proj. pts</span><strong>${d.points.toFixed(1)}</strong></div></div></article>`);
+    const loaded=Object.prototype.hasOwnProperty.call(state.schedule,d.date);
+    const scheduleText=loaded ? (d.games ? `${d.games} NHL games · ${d.nightClass} night` : '0 NHL games') : 'No schedule data';
+    wrap.insertAdjacentHTML('beforeend',`<article class="day-card ${cls}"><div class="date">${esc(fmtDate(d.date))}</div><div class="tiny">${scheduleText}</div><div class="games">${d.expectedStarts.toFixed(1)}</div><div class="tiny">expected usable starts</div><div class="day-metrics"><div><span>Roster team games</span><strong>${d.scheduled.length}</strong></div><div><span>Blocked</span><strong>${d.blocked.length}</strong></div><div><span>Goalies TBD</span><strong>${d.goalieUnconfirmed.length}</strong></div><div><span>Proj. pts</span><strong>${d.points.toFixed(1)}</strong></div></div></article>`);
   }
 }
 
 function candidateAnalysisRows() {
+  const scheduleReady=hasScheduleWindow(state.schedule,state.selectedDate);
+  const rosterReady=rosterProjectionComplete();
   return state.waivers.map(c=>{
-    const analysis = hasProjection(c)
+    const analysis = hasProjection(c) && scheduleReady && rosterReady
       ? analyzeCandidate(c,state,league.activeSlots)
-      : {...candidateScheduleMetrics(c,state.schedule,state.selectedDate),delta:Number.NaN,usableDelta:Number.NaN,drop:null,projectionMissing:true};
+      : {...candidateScheduleMetrics(c,state.schedule,state.selectedDate),delta:Number.NaN,usableDelta:Number.NaN,drop:null,projectionMissing:!hasProjection(c),scheduleMissing:!scheduleReady,rosterProjectionMissing:!rosterReady};
     return {candidate:c,analysis};
   }).sort((a,b)=>{
     const aReady=hasProjection(a.candidate), bReady=hasProjection(b.candidate);
@@ -805,43 +1071,51 @@ function renderWaivers() {
     return (!filter || text.includes(filter)) && (!posFilter || (c.positions||[]).includes(posFilter));
   });
   $('#waiverPoolSummary').textContent = state.waivers.length
-    ? `${rows.length} shown · ${state.waivers.length} in local Yahoo/manual pool`
+    ? `${rows.length} shown · ${state.waivers.length} in stored Yahoo/manual pool`
     : 'No Yahoo player pool loaded yet';
   if (!rows.length) {
     body.innerHTML='<tr><td colspan="12" class="muted">No waiver candidates match the current pool/filter.</td></tr>';
     return;
   }
-  const scheduleReady=Boolean(state.scheduleFetchedAt);
+  const scheduleReady=hasScheduleWindow(state.schedule,state.selectedDate);
+  const rosterReady=rosterProjectionComplete();
   rows.forEach((x,i)=>{
     const c=x.candidate,a=x.analysis;
     const projectionReady=hasProjection(c);
-    const actionable=projectionReady && Number.isFinite(a.delta);
-    const deltaText=scheduleReady && actionable ? `${a.delta>=0?'+':''}${a.delta.toFixed(1)}` : '—';
+    const actionable=scheduleReady && rosterReady && projectionReady && Number.isFinite(a.delta);
+    const deltaText=actionable ? `${a.delta>=0?'+':''}${a.delta.toFixed(1)}` : '—';
     const gainCls=actionable && a.delta>=0?'gain-pos':'gain-neg';
-    const buttonDisabled=!scheduleReady || !actionable || state.movesThisWeek>=league.maxAddsPerWeek;
-    const buttonLabel=!projectionReady?'Set projection':state.movesThisWeek>=league.maxAddsPerWeek?'Weekly limit reached':'Stage locally';
+    const buttonDisabled=!actionable || state.movesThisWeek>=league.maxAddsPerWeek;
+    const buttonLabel=!scheduleReady?'Load schedule':!rosterReady?'Roster projections needed':!projectionReady?'Set projection':state.movesThisWeek>=league.maxAddsPerWeek?'Weekly limit reached':'Stage scenario';
     const owned=c.percentOwned==null?'—':`${c.percentOwned.toFixed(0)}%`;
+    const dropText=!scheduleReady
+      ? '<span class="muted">Schedule needed</span>'
+      : !rosterReady
+        ? '<span class="muted">Roster projections needed</span>'
+        : !projectionReady
+          ? '<span class="muted">Projection needed</span>'
+          : !actionable
+            ? 'No legal drop'
+            : a.drop?esc(a.drop.name):'<span class="gain-pos">Open slot</span>';
     body.insertAdjacentHTML('beforeend',`<tr>
       <td><span class="rank-badge">${i+1}</span></td>
       <td><div class="player-cell">${playerAvatar(c)}<div><strong>${esc(c.name)}</strong><div class="mini-note source-yahoo">${esc(c.team)} · ${esc(ownershipLabel(c))}</div></div></div></td>
       <td>${esc((c.positions||[]).join('/'))}</td>
       <td>${statusBadge(c)}</td>
       <td>${owned}</td>
-      <td><input class="w-fppg input-small" data-id="${esc(c.id)}" type="number" step="0.01" min="-20" max="30" value="${Number(c.fppg)||0}" /><div class="mini-note">${esc(projectionLabel(c))}</div></td>
+      <td><input class="w-fppg input-small" data-id="${esc(c.id)}" type="number" step="0.01" min="-20" max="30" value="${esc(projectionInputValue(c))}" /><div class="mini-note">${esc(projectionLabel(c))}</div></td>
       <td>${c.yahooSeasonPoints==null?'—':Number(c.yahooSeasonPoints).toFixed(1)}</td>
       <td>${a.games}</td>
       <td>${a.light}</td>
-      <td>${!projectionReady?'<span class="muted">Projection needed</span>':!actionable?'No legal drop':a.drop?esc(a.drop.name):'<span class="gain-pos">Open slot</span>'}</td>
-      <td class="${gainCls}">${deltaText}${scheduleReady && actionable?` <span class="mini-note">(${a.usableDelta>=0?'+':''}${a.usableDelta.toFixed(1)} starts)</span>`:''}</td>
+      <td>${dropText}</td>
+      <td class="${gainCls}">${deltaText}${actionable?` <span class="mini-note">(${a.usableDelta>=0?'+':''}${a.usableDelta.toFixed(1)} starts)</span>`:''}</td>
       <td><button class="btn small-btn stage-waiver" data-id="${esc(c.id)}" ${buttonDisabled?'disabled':''}>${buttonLabel}</button></td>
     </tr>`);
   });
   body.querySelectorAll('.w-fppg').forEach(el=>el.addEventListener('change',e=>{
     const p=state.waivers.find(x=>x.id===e.target.dataset.id);
     if (!p) return;
-    p.fppg=Number(e.target.value)||0;
-    p.projectionSource='manual';
-    p.projectionUpdatedAt=new Date().toISOString();
+    applyProjectionInput(p,e.target.value);
     saveState({source:'manual',action:'waiver-projection-edit',entityType:'player',entityId:p.yahooPlayerKey||p.id,after:{fppg:p.fppg,projectionSource:p.projectionSource}});renderAll();
   }));
   body.querySelectorAll('.stage-waiver').forEach(btn=>btn.addEventListener('click',()=>stageCandidate(btn.dataset.id)));
@@ -849,11 +1123,15 @@ function renderWaivers() {
 
 function stageCandidate(id) {
   if (state.movesThisWeek>=league.maxAddsPerWeek) {
-    alert('The weekly acquisition limit is already reached. No local move will be staged.');
+    alert('The weekly acquisition limit is already reached. No scenario move will be staged.');
     return;
   }
-  if (!state.scheduleFetchedAt) {
-    alert('Load the NHL schedule before evaluating a waiver move.');
+  if (!hasScheduleWindow(state.schedule,state.selectedDate)) {
+    alert('Load the NHL schedule for the selected 7-day window before evaluating a waiver move.');
+    return;
+  }
+  if (!rosterProjectionComplete()) {
+    alert('Complete projections for the active/bench roster before evaluating add/drop value. Unknown roster value is not treated as zero.');
     return;
   }
   const c=state.waivers.find(x=>x.id===id);
@@ -864,14 +1142,14 @@ function stageCandidate(id) {
   }
   const a=analyzeCandidate(c,state,league.activeSlots);
   if (!Number.isFinite(a.delta)) {
-    alert('There is no legal local roster path for this player without dropping a protected/reserve player.');
+    alert('There is no legal stored-roster path for this player without dropping a protected/reserve player.');
     return;
   }
   const dropName=a.drop?.name || 'an open active/bench slot';
-  const msg=`Stage ${c.name} in the local model using ${dropName}${a.drop?' as the drop':''}?\n\nProjected 7-day change: ${a.delta>=0?'+':''}${a.delta.toFixed(1)} points.\n\nThis changes only the local model. It does NOT use a Yahoo acquisition or submit a transaction.`;
+  const msg=`Stage ${c.name} in the stored scenario using ${dropName}${a.drop?' as the drop':''}?\n\nProjected 7-day change: ${a.delta>=0?'+':''}${a.delta.toFixed(1)} points.\n\nThis changes only the Situation Room scenario. It does NOT use a Yahoo acquisition or submit a transaction.`;
   if (!confirm(msg)) return;
   if (a.drop) state.roster=state.roster.filter(p=>p.id!==a.drop.id);
-  state.roster.push({...c,id:makeUuid(),selectedPosition:'BN',source:'staged-local'});
+  state.roster.push({...c,id:makeUuid(),selectedPosition:'BN',source:'staged-scenario'});
   state.waivers=state.waivers.filter(x=>x.id!==id);
   saveState({source:'manual',action:'stage-candidate',entityType:'player',entityId:c.yahooPlayerKey||c.id,metadata:{candidate:c.name,drop:a.drop?.name||null,projectedDelta:a.delta}});renderAll();
 }
@@ -886,23 +1164,23 @@ function renderRoster() {
     const owned=p.percentOwned==null?'—':`${p.percentOwned.toFixed(0)}%`;
     body.insertAdjacentHTML('beforeend',`<tr data-id="${esc(p.id)}">
       <td><div class="player-cell">${playerAvatar(p)}<div><input class="r-name" ${locked} value="${esc(p.name)}" /><div class="mini-note">${esc(p.source||'local')}</div></div></div></td>
-      <td><input class="r-team input-tiny" ${locked} value="${esc(p.team)}" maxlength="4" /><div class="mini-note">${esc((p.positions||[]).join('/'))}</div><input class="r-pos visually-hidden" ${locked} value="${esc((p.positions||[]).join('/'))}" /></td>
+      <td><input class="r-team input-tiny" ${locked} value="${esc(p.team)}" maxlength="4" /><input class="r-pos input-small" ${locked} value="${esc((p.positions||[]).join('/'))}" aria-label="Eligible positions for ${esc(p.name)}" /></td>
       <td><input class="r-selected input-tiny" ${locked} value="${esc(p.selectedPosition||'BN')}" /></td>
       <td><input class="r-status input-tiny" ${locked} value="${esc(p.status||'')}" placeholder="Active" /></td>
-      <td><input class="r-fppg input-small" type="number" step="0.01" min="-20" max="30" value="${Number(p.fppg)||0}" /><div class="mini-note">${esc(projectionLabel(p))}</div></td>
+      <td><input class="r-fppg input-small" type="number" step="0.01" min="-20" max="30" value="${esc(projectionInputValue(p))}" /><div class="mini-note">${esc(projectionLabel(p))}</div></td>
       <td>${p.yahooSeasonPoints==null?'—':Number(p.yahooSeasonPoints).toFixed(1)}</td>
       <td>${owned}</td>
       <td>${goalie?`<input class="r-start input-small" type="number" step="5" min="0" max="100" value="${Math.round((Number(p.startProbability)||0)*100)}" />`:'<span class="mini-note">n/a</span>'}</td>
       <td class="checkbox-cell"><input class="r-core" type="checkbox" ${p.core?'checked':''} /></td>
-      <td class="checkbox-cell"><input class="r-drop" type="checkbox" ${p.canDrop!==false?'checked':''} ${p.core?'disabled':''} /></td>
-      <td><button class="btn small-btn remove-roster">Remove local</button></td>
+      <td class="checkbox-cell"><input class="r-drop" type="checkbox" ${p.canDrop!==false?'checked':''} ${p.core||p.yahooUndroppable?'disabled':''} title="${p.yahooUndroppable?'Yahoo marks this player cant-cut':''}" />${p.yahooUndroppable?'<div class="mini-note">Yahoo cant-cut</div>':''}</td>
+      <td><button class="btn small-btn remove-roster">Remove</button></td>
     </tr>`);
   });
   body.querySelectorAll('input').forEach(el=>el.addEventListener('change',handleRosterEdit));
   body.querySelectorAll('.remove-roster').forEach(btn=>btn.addEventListener('click',e=>{
     const id=e.target.closest('tr').dataset.id;
     const p=state.roster.find(x=>x.id===id);
-    if (p && confirm(`Remove ${p.name} from the local model? This does not affect Yahoo.`)) {
+    if (p && confirm(`Remove ${p.name} from the stored Situation Room model? This does not affect Yahoo.`)) {
       state.roster=state.roster.filter(x=>x.id!==id);saveState({source:'manual',action:'roster-remove',entityType:'player',entityId:p.yahooPlayerKey||p.id,before:p});renderAll();
     }
   }));
@@ -918,13 +1196,10 @@ function handleRosterEdit(e) {
   p.positions=parsePositions(tr.querySelector('.r-pos').value);
   p.selectedPosition=tr.querySelector('.r-selected').value.trim().toUpperCase() || 'BN';
   p.status=tr.querySelector('.r-status').value.trim().toUpperCase();
-  p.fppg=Number(tr.querySelector('.r-fppg').value)||0;
-  if (e.target.classList.contains('r-fppg')) {
-    p.projectionSource='manual';
-    p.projectionUpdatedAt=new Date().toISOString();
-  }
+  if (e.target.classList.contains('r-fppg')) applyProjectionInput(p,tr.querySelector('.r-fppg').value);
   p.core=tr.querySelector('.r-core').checked;
-  p.canDrop=p.core?false:tr.querySelector('.r-drop').checked;
+  if (e.target.classList.contains('r-drop')) p.manualCanDrop=tr.querySelector('.r-drop').checked;
+  p.canDrop=!p.core && p.manualCanDrop!==false && !p.yahooUndroppable;
   p.startProbability=isGoalie(p)?Math.max(0,Math.min(1,(Number(tr.querySelector('.r-start')?.value)||0)/100)):1;
   saveState({source:'manual',action:'roster-edit',entityType:'player',entityId:p.yahooPlayerKey||p.id,before,after:clone(p)});renderAll();
 }
@@ -940,18 +1215,21 @@ function renderLeague() {
 function buildBrief() {
   const w=projectWeek(state.roster,state.schedule,state.selectedDate,league.activeSlots);
   const waiverRows=candidateAnalysisRows().slice(0,25);
+  const projectionsReady=rosterProjectionComplete();
+  const scheduleReady=hasScheduleWindow(state.schedule,state.selectedDate);
   const brief={
     purpose:'Analyze Dead Puck Society for daily lineup and waiver optimization. Maximize usable fantasy points, not raw roster value.',
     generatedAt:new Date().toISOString(),
-    dataSources:{roster:state.yahoo.rosterSource, yahooLastSync:state.yahoo.lastSyncAt, nhlScheduleFetchedAt:state.scheduleFetchedAt},
+    dataQuality:{scheduleWindowComplete:scheduleReady,rosterProjectionsComplete:projectionsReady,unknownProjectionMeans:null},
+    dataSources:{roster:state.yahoo.rosterSource,yahooLastSync:state.yahoo.lastSyncAt,nhlScheduleFetchedAt:state.scheduleFetchedAt},
     league:{yahooLeagueId:league.id,name:league.name,teams:league.teams,scoringType:league.scoringType,maxAddsPerWeek:league.maxAddsPerWeek,movesUsedThisWeek:state.movesThisWeek,waiverPriority:league.waiverPriority,waiverType:league.waiverType,lineupDeadline:league.lineupDeadline,activeSlots:league.activeSlots,skaterScoring:league.skaterScoring,goalieScoring:league.goalieScoring},
-    roster:state.roster.map(p=>({name:p.name,team:p.team,positions:p.positions,yahooSlot:p.selectedPosition,status:p.status,fppg:p.fppg,core:p.core,canDrop:p.canDrop,startProbability:isGoalie(p)?p.startProbability:1,yahooSeasonPoints:p.yahooSeasonPoints,percentOwned:p.percentOwned,projectionSource:p.projectionSource,source:p.source})),
-    next7Days:w.days.map(d=>({date:d.date,nhlGames:d.games,night:d.nightClass,rosterTeamGames:d.scheduled.map(p=>p.name),starters:d.starters.map(x=>({slot:league.activeSlots[x.slotIndex],player:x.player.name,availability:x.player.availability})),blocked:d.blocked.map(p=>p.name),goalieStartsUnconfirmed:d.goalieUnconfirmed.map(p=>p.name),projectedPoints:Number(d.points.toFixed(2))})),
-    summary:{expectedUsableStarts:Number(w.usableGames.toFixed(2)),scheduledRosterTeamGames:w.scheduledGames,projectedPoints:Number(w.points.toFixed(2)),blockedProjectedPoints:Number(w.leakage.toFixed(2))},
-    waiverCandidates:waiverRows.map(({candidate:c,analysis:a})=>({name:c.name,team:c.team,positions:c.positions,fppg:c.fppg,yahooSeasonPoints:c.yahooSeasonPoints,percentOwned:c.percentOwned,ownershipType:c.ownershipType,projectionSource:c.projectionSource,games7d:a.games,lightNights:a.light,bestDrop:Number.isFinite(a.delta)?(a.drop?.name||'Open slot'):'No legal drop',projectedNetGain:Number.isFinite(a.delta)?Number(a.delta.toFixed(2)):null,expectedStartsDelta:Number.isFinite(a.usableDelta)?Number(a.usableDelta.toFixed(2)):null})),
-    instructions:['Do not assume a player is available unless listed in waiverCandidates.','Do not recommend dropping a core player or a player with canDrop=false.','Account for the 5-add weekly limit.','Prefer moves that create additional usable starts on light nights.','Goalie team games are not counted as starts when startProbability is 0.','FPPG is an editable estimate, not a guaranteed result.']
+    roster:state.roster.map(p=>({name:p.name,team:p.team,positions:p.positions,yahooSlot:p.selectedPosition,status:p.status,fppg:hasProjection(p)?Number(p.fppg):null,core:p.core,manualCanDrop:p.manualCanDrop,canDrop:p.canDrop,yahooUndroppable:p.yahooUndroppable,startProbability:isGoalie(p)?p.startProbability:1,yahooSeasonPoints:p.yahooSeasonPoints,percentOwned:p.percentOwned,projectionSource:p.projectionSource,source:p.source})),
+    next7Days:w.days.map(d=>({date:d.date,nhlGames:Object.prototype.hasOwnProperty.call(state.schedule,d.date)?d.games:null,night:Object.prototype.hasOwnProperty.call(state.schedule,d.date)?d.nightClass:null,rosterTeamGames:d.scheduled.map(p=>p.name),starters:d.starters.map(x=>({slot:league.activeSlots[x.slotIndex],player:x.player.name,availability:x.player.availability,projectionKnown:hasProjection(x.player)})),blocked:d.blocked.map(p=>p.name),goalieStartsUnconfirmed:d.goalieUnconfirmed.map(p=>p.name),projectedPoints:projectionsReady&&scheduleReady?Number(d.points.toFixed(2)):null})),
+    summary:{expectedUsableStarts:scheduleReady?Number(w.usableGames.toFixed(2)):null,scheduledRosterTeamGames:scheduleReady?w.scheduledGames:null,projectedPoints:projectionsReady&&scheduleReady?Number(w.points.toFixed(2)):null,blockedProjectedPoints:projectionsReady&&scheduleReady?Number(w.leakage.toFixed(2)):null},
+    waiverCandidates:waiverRows.map(({candidate:c,analysis:a})=>({name:c.name,team:c.team,positions:c.positions,fppg:hasProjection(c)?Number(c.fppg):null,yahooSeasonPoints:c.yahooSeasonPoints,percentOwned:c.percentOwned,ownershipType:c.ownershipType,projectionSource:c.projectionSource,games7d:a.games,lightNights:a.light,bestDrop:Number.isFinite(a.delta)?(a.drop?.name||'Open slot'):null,projectedNetGain:Number.isFinite(a.delta)?Number(a.delta.toFixed(2)):null,expectedStartsDelta:Number.isFinite(a.usableDelta)?Number(a.usableDelta.toFixed(2)):null})),
+    instructions:['Treat null projections and null projected totals as unknown, not zero.','Do not assume a player is available unless listed in waiverCandidates.','Do not recommend dropping a core player or a player with canDrop=false.','Do not make add/drop value claims until rosterProjectionsComplete and scheduleWindowComplete are true.','Account for the 5-add weekly limit.','Prefer moves that create additional usable starts on light nights.','Goalie team games are not counted as starts when startProbability is 0.','FPPG is an editable estimate, not a guaranteed result.']
   };
-  return 'DEAD PUCK SOCIETY — SITUATION BRIEF V2\n\n'+JSON.stringify(brief,null,2);
+  return 'DEAD PUCK SOCIETY — SITUATION BRIEF V2.2.1\n\n'+JSON.stringify(brief,null,2);
 }
 
 function exportState() {
@@ -961,21 +1239,34 @@ function exportState() {
 }
 
 function importBackup(file) {
+  if (file.size > 2 * 1024 * 1024) {
+    alert('Backup is too large to import safely.');
+    return;
+  }
   const reader=new FileReader();
-  reader.onload=()=>{
+  reader.onload=async()=>{
     try {
       const payload=JSON.parse(reader.result);
-      if (!payload.state || !Array.isArray(payload.state.roster)) throw new Error('Not a Dead Puck backup.');
-      state={...clone(seedState),...payload.state,roster:payload.state.roster.map(normalizeLoadedPlayer),waivers:(payload.state.waivers||[]).map(normalizeLoadedPlayer),yahoo:{...clone(seedState.yahoo),...(payload.state.yahoo||{})}};
-      saveState({source:'manual',action:'backup-import',metadata:{rosterCount:state.roster.length,waiverCount:state.waivers.length}});renderAll();
-    } catch (err) { alert(`Import failed: ${err.message}`); }
+      if (!payload.state || typeof payload.state !== 'object' || !Array.isArray(payload.state.roster)) {
+        throw new Error('Not a Dead Puck backup.');
+      }
+      const incoming=normalizeState(payload.state);
+      if (!confirm(`Replace the stored Situation Room state with this backup?\n\nRoster: ${incoming.roster.length}\nWaiver pool: ${incoming.waivers.length}\nSelected date: ${incoming.selectedDate}\n\nThis creates a new revision and does not affect Yahoo.`)) return;
+      state=incoming;
+      const saved=await saveState({source:'manual',action:'backup-import',metadata:{rosterCount:state.roster.length,waiverCount:state.waivers.length}});
+      renderAll();
+      if (!saved) alert('The backup is loaded in the recovery copy but could not be saved to Site storage. Use History / Storage to retry.');
+    } catch (err) {
+      alert(`Import failed: ${err.message}`);
+    }
   };
+  reader.onerror=()=>alert('Import failed: the backup file could not be read.');
   reader.readAsText(file);
 }
 
 function renderAll() {
   $('#todayDate').value=state.selectedDate;
-  renderScheduleStatus();renderKPIs();renderToday();renderWeek();renderWaivers();renderRoster();renderLeague();renderYahooStatus();renderPersistenceStatus();renderHistory();renderRecoveryNotice();
+  renderScheduleStatus();renderKPIs();renderToday();renderWeek();renderWaivers();renderRoster();renderLeague();renderYahooStatus();renderPersistenceStatus();renderHistory();
 }
 
 $$('.tab').forEach(btn=>btn.addEventListener('click',()=>{
@@ -984,7 +1275,7 @@ $$('.tab').forEach(btn=>btn.addEventListener('click',()=>{
 $('#todayDate').addEventListener('change',e=>{state.selectedDate=e.target.value||isoDate(new Date());saveState({source:'manual',action:'planner-date-change',after:{selectedDate:state.selectedDate}});renderAll();});
 $('#optimizeTodayBtn').addEventListener('click',renderToday);
 $('#refreshScheduleBtn').addEventListener('click',refreshSchedule);
-$('#connectYahooBtn').addEventListener('click',()=>{window.location.href='/api/yahoo/login';});
+$('#connectYahooBtn').addEventListener('click',()=>{if(!yahooStatus.configured){alert('Yahoo integration is not configured yet.');return;}window.location.href='/api/yahoo/login';});
 $('#syncYahooBtn').addEventListener('click',syncYahoo);
 $('#syncYahooHeaderBtn').addEventListener('click',syncYahoo);
 $('#searchYahooPlayersBtn').addEventListener('click',searchYahooPlayers);
@@ -992,44 +1283,25 @@ $('#yahooPlayerSearch').addEventListener('keydown',e=>{if(e.key==='Enter')search
 $('#waiverFilterInput').addEventListener('input',renderWaivers);
 $('#waiverPositionFilter').addEventListener('change',renderWaivers);
 $('#refreshHistoryBtn').addEventListener('click',loadHistory);
-$('#downloadRecoveryBtn').addEventListener('click',()=>{
-  const blob=new Blob([JSON.stringify({recoveryCopies:recoveryQueue},null,2)],{type:'application/json'});
-  const link=document.createElement('a');link.href=URL.createObjectURL(blob);
-  link.download=`dead-puck-recovery-${isoDate(new Date())}.json`;link.click();URL.revokeObjectURL(link.href);
-});
-$('#restoreRecoveryBtn').addEventListener('click',async()=>{
-  const pending=recoveryQueue.at(-1);
-  if (!pending) return;
-  try {
-    const latest=await fetchJson('/api/state');
-    if (Number(latest.revision)!==Number(pending.baseRevision)
-      && !confirm('The Site has newer changes. Restoring this copy will replace its current state. Continue?')) return;
-    state=normalizeState(pending.state);
-    stateRevision=Number(latest.revision)||0;
-    await saveState({source:'manual',action:'recover-unsaved-state',metadata:{recoveredAt:new Date().toISOString()}});
-    renderAll();
-  } catch (err) { alert(`Recovery was not saved: ${err.message}`);renderPersistenceStatus(err.message); }
-});
-$('#discardRecoveryBtn').addEventListener('click',()=>{
-  if (!confirm('Discard all browser recovery copies?')) return;
-  recoveryQueue=[];writeRecoveryQueue();renderPersistenceStatus();
-});
-$('#disconnectYahooBtn').addEventListener('click',async()=>{if(!confirm('Disconnect Yahoo from this Site?'))return;await fetchJson('/api/yahoo/disconnect',{method:'POST'});state.yahoo={...clone(seedState.yahoo)};await saveState({source:'manual',action:'yahoo-disconnect'});await loadYahooStatus();renderAll();});
+$('#retryStorageBtn').addEventListener('click',()=>{if(!pendingSaves.length){location.reload();return;}storageError='';storageConflict=false;drainSaveQueue();renderPersistenceStatus();});
+$('#reloadSiteStateBtn').addEventListener('click',()=>{if(!confirm('Discard the browser recovery copy and reload the authoritative Site state? Export JSON first if you need to preserve the recovered view.'))return;localStorage.removeItem(PENDING_RECOVERY_KEY);location.reload();});
+$('#disconnectYahooBtn').addEventListener('click',async()=>{if(!yahooStatus.connected)return;if(!confirm('Disconnect Yahoo from this Situation Room Site?'))return;await fetchJson('/api/yahoo/disconnect',{method:'POST'});state.yahoo={...clone(seedState.yahoo)};saveState({source:'yahoo',action:'yahoo-disconnect'});await loadYahooStatus();renderAll();});
 $('#importWaiversBtn').addEventListener('click',()=>{const players=parsePlayerLines($('#waiverImport').value);if(!players.length){alert('No valid waiver lines found.');return;}state.waivers=players;saveState({source:'manual',action:'waiver-import',metadata:{count:players.length}});renderAll();});
 $('#clearWaiversBtn').addEventListener('click',()=>{if(confirm('Clear the stored waiver candidate pool?')){const count=state.waivers.length;state.waivers=[];saveState({source:'manual',action:'waiver-clear',metadata:{count}});renderAll();}});
-$('#addRosterRowBtn').addEventListener('click',()=>{const player=normalizeLoadedPlayer({id:makeUuid(),name:'New player',team:'',positions:['C'],fppg:0,core:false,canDrop:true,selectedPosition:'BN',source:'manual'});state.roster.push(player);saveState({source:'manual',action:'roster-add',entityType:'player',entityId:player.id,after:player});renderAll();});
-$('#importRosterBtn').addEventListener('click',()=>{const players=parsePlayerLines($('#rosterImport').value);if(!players.length){alert('No valid roster lines found.');return;}if(!confirm(`Replace the local roster with ${players.length} imported players?`))return;state.roster=players.map(normalizeLoadedPlayer);state.yahoo.rosterSource='Manual import';saveState({source:'manual',action:'roster-import',metadata:{count:players.length}});renderAll();});
+$('#addRosterRowBtn').addEventListener('click',()=>{const player=normalizeLoadedPlayer({id:makeUuid(),name:'New player',team:'',positions:['C'],fppg:0,core:false,canDrop:true,selectedPosition:'BN',source:'manual',projectionSource:'unset'});state.roster.push(player);saveState({source:'manual',action:'roster-add',entityType:'player',entityId:player.id,after:player});renderAll();});
+$('#importRosterBtn').addEventListener('click',()=>{const players=parsePlayerLines($('#rosterImport').value);if(!players.length){alert('No valid roster lines found.');return;}if(!confirm(`Replace the stored roster with ${players.length} imported players?`))return;state.roster=players.map(normalizeLoadedPlayer);state.yahoo.rosterSource='Manual import';saveState({source:'manual',action:'roster-import',metadata:{count:players.length}});renderAll();});
 $('#movesUsedInput').addEventListener('change',e=>{const before=state.movesThisWeek;state.movesThisWeek=Math.max(0,Math.min(league.maxAddsPerWeek,Number(e.target.value)||0));saveState({source:'manual',action:'moves-used-edit',before:{movesThisWeek:before},after:{movesThisWeek:state.movesThisWeek}});renderAll();});
 $('#copyBriefBtn').addEventListener('click',async()=>{try{await navigator.clipboard.writeText(buildBrief());$('#copyStatus').textContent='Situation Brief copied. Paste it into our ChatGPT conversation.';}catch{const ta=document.createElement('textarea');ta.value=buildBrief();document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove();$('#copyStatus').textContent='Situation Brief copied.';}});
 $('#exportBtn').addEventListener('click',exportState);
 $('#importFile').addEventListener('change',e=>{const f=e.target.files?.[0];if(f)importBackup(f);e.target.value='';});
-$('#resetBtn').addEventListener('click',()=>{if(confirm('Reset the stored Situation Room data to the v2 seed? This will create a revision in history.')){const before=clone(state);localStorage.removeItem(STORAGE_KEY);localStorage.removeItem(LEGACY_STORAGE_KEY);state=clone(seedState);saveState({source:'manual',action:'state-reset',before,after:clone(state)});renderAll();}});
+$('#resetBtn').addEventListener('click',()=>{if(confirm('Reset the stored Situation Room data to an empty seed? This will create a revision in history.')){const beforeSummary={rosterCount:state.roster.length,waiverCount:state.waivers.length,scheduleDays:Object.keys(state.schedule||{}).length};localStorage.removeItem(STORAGE_KEY);localStorage.removeItem(LEGACY_STORAGE_KEY);state=clone(seedState);saveState({source:'manual',action:'state-reset',metadata:{before:beforeSummary,after:{rosterCount:0,waiverCount:0,scheduleDays:0}}});renderAll();}});
 
 try {
   await loadPersistedState();
 } catch (err) {
+  storageError=err.message || 'Site storage unavailable.';
   $('#saveStatus').textContent='Site storage unavailable';
-  renderPersistenceStatus(err.message);
+  renderPersistenceStatus();
 }
 renderAll();
 await Promise.all([loadYahooStatus(),loadHistory()]);

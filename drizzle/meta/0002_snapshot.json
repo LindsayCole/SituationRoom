@@ -1,8 +1,8 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "3ed1f4c7-1e4a-4a07-aba5-6be949f3d5b3",
-  "prevId": "16ec76f7-544f-47d1-bb40-644b588ed2c4",
+  "id": "36522864-830f-4947-be83-b4aa74516038",
+  "prevId": "3ed1f4c7-1e4a-4a07-aba5-6be949f3d5b3",
   "tables": {
     "situation_room_changes": {
       "name": "situation_room_changes",
@@ -241,6 +241,68 @@
       },
       "foreignKeys": {},
       "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "situation_room_revisions": {
+      "name": "situation_room_revisions",
+      "columns": {
+        "owner_id": {
+          "name": "owner_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "revision": {
+          "name": "revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "state_json": {
+          "name": "state_json",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "change_id": {
+          "name": "change_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "idx_situation_room_revisions_owner_created": {
+          "name": "idx_situation_room_revisions_owner_created",
+          "columns": [
+            "owner_id",
+            "created_at"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {
+        "situation_room_revisions_owner_id_revision_pk": {
+          "columns": [
+            "owner_id",
+            "revision"
+          ],
+          "name": "situation_room_revisions_owner_id_revision_pk"
+        }
+      },
       "uniqueConstraints": {},
       "checkConstraints": {}
     }

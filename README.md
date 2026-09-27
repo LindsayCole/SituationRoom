@@ -1,4 +1,4 @@
-# Dead Puck Society — Situation Room v2.2 alpha
+# Dead Puck Society — Situation Room v2.3 alpha
 
 A persistent season-long fantasy hockey command center built for **ChatGPT Sites**.
 
@@ -42,7 +42,7 @@ One current application snapshot per signed-in Site user:
 - weekly move count
 - planner date
 - goalie start probabilities
-- local analysis settings
+- Situation Room analysis settings
 
 Every successful write increments a numeric revision.
 
@@ -84,7 +84,7 @@ The server validates the state and writes the new snapshot and corresponding cha
 
 If another session has already advanced the revision, the API returns a conflict instead of silently overwriting newer data.
 
-If a save fails, the browser keeps an emergency recovery copy locally. On reload, it retries when the Site revision is unchanged; otherwise, the History / Storage area offers a download or a deliberate restore over newer Site data. Recovery copies are not authoritative application storage.
+If a Site save fails, pending writes remain in an ordered queue and the browser keeps an emergency recovery copy. On reload, recovery is replayed only when it is safe to do so. If the Site has advanced to a newer revision, the recovered view is preserved for export and the UI requires an explicit reload of authoritative Site state instead of silently overwriting it.
 
 ## Existing browser-state migration
 
@@ -94,7 +94,7 @@ On the first visit after deployment:
 2. If no D1 state exists, it looks for old v2/v1 browser state.
 3. Existing browser state is written into D1 as an explicit `migrate-browser-state` revision.
 4. The old browser state keys are removed after the Site save succeeds.
-5. If no old state exists, the standard seed becomes revision 1.
+5. If no old state exists, an **empty roster/waiver seed** becomes revision 1. The application does not invent starter players or teams.
 
 This only helps when the new deployment shares browser origin/storage with the previous Site. JSON backup import remains available for other migrations.
 
@@ -125,9 +125,7 @@ Configure these four hosted runtime values in Sites:
 - `YAHOO_REDIRECT_URI`: the deployed Site's exact `https://.../api/yahoo/callback` URL, also registered in the Yahoo application
 - `YAHOO_TOKEN_ENCRYPTION_KEY`: 64 hexadecimal characters representing 32 random bytes
 
-The worker requires the callback URL to match the current Site origin. After configuring the Yahoo application and Site secrets, use **Connect Yahoo** and **Sync now**. A sync discovers Dead Puck Society's league team, reads today's roster and the top 100 available players, merges Yahoo facts with stored manual projections, then saves one revision and a sync record. Available-player search uses the same read-only connection. The first live Yahoo response still needs validation against the league's actual data; no live Yahoo credentials are present in this repository.
-
-Yahoo writes, transaction-week parsing, forward projections and goalie-start providers are not implemented.
+The worker requires the callback URL to match the current Site origin. After configuring the Yahoo application and Site secrets, use **Connect Yahoo** and **Sync now**. A sync discovers the user's league team, reads today's roster and available players, merges Yahoo facts with stored manual projections, then saves a revision and sync record. Available-player search uses the same read-only connection. Live Yahoo response shapes still need validation against this league; no credentials are present in this repository.
 
 ## NHL schedule
 
@@ -137,7 +135,7 @@ The Site worker proxies the public NHL schedule endpoint through:
 GET /api/nhl/schedule?date=YYYY-MM-DD
 ```
 
-A successful refresh is persisted as an `nhl / schedule-refresh` revision.
+A successful refresh is persisted as an `nhl / schedule-refresh` revision. Seven-day analysis is enabled only when all seven requested dates are confirmed by the NHL response. Missing dates are fetched individually; if coverage is still incomplete, the stored schedule is left unchanged.
 
 ## Persistent API
 
@@ -152,7 +150,22 @@ A successful refresh is persisted as an `nhl / schedule-refresh` revision.
 - `POST /api/yahoo/disconnect`, `/api/yahoo/sync-failure`
 - `GET /api/yahoo/teams`, `/api/yahoo/roster`, `/api/yahoo/available`, `/api/yahoo/transactions`, `/api/yahoo/league`
 
-API responses containing user state are marked `Cache-Control: no-store`.
+API responses containing user state are marked `Cache-Control: no-store`. Static Site responses also receive CSP, clickjacking, referrer, MIME-sniffing and permissions-policy protections.
+
+## Data-quality rules
+
+- Unknown values remain unknown. Missing FPPG is stored with `projectionSource: unset`, not treated as a real zero.
+- Net waiver/add-drop value is not calculated until the active/bench roster has complete projections.
+- Projected-points and leakage KPIs are withheld when roster projections are incomplete.
+- A goalie team game is not a goalie start unless a start probability is supplied.
+- A selected seven-day period is not considered schedule-ready until all seven dates are confirmed.
+- The ChatGPT Situation Brief exports unknown projections/totals as `null`, not `0`.
+
+## Validation
+
+CI checks TypeScript, browser JavaScript syntax, deterministic optimizer/data-quality tests, frontend/HTML selector contracts, persistence contracts, and a full ChatGPT Sites production build. GitGuardian also scans the branch for committed secrets.
+
+Deployed-Site D1 behavior and live Yahoo XML require checks against the private production Site and the owner's Yahoo account.
 
 ## Build requirements
 
@@ -172,7 +185,7 @@ The production build packages:
 - `.openai/hosting.json`
 - generated D1 migration SQL and metadata under `drizzle/`, also copied into the Worker build output
 
-The original `0000_situation_room_persistence` migration is retained for existing databases. `0001_yahoo_auth_and_history` adds Yahoo token tables and the revision uniqueness guard. Existing state rows are preserved during this upgrade.
+The original `0000_situation_room_persistence` migration is retained for existing databases. `0001_change_revision_uniqueness` guards concurrent history writes, `0002_revision_snapshots` adds immutable state snapshots, and `0003_yahoo_auth_and_history` adds the Yahoo token tables. Existing state rows are preserved during these upgrades.
 
 ## Deployment
 
@@ -197,6 +210,19 @@ ChatGPT Sites is currently a public-beta feature. OpenAI documents that deployed
 - Continual rolling waiver list
 - Daily - Today lineup changes
 - 2-day waiver time
+
+## Intentionally unfinished
+
+These are planned next-phase items rather than hidden defects:
+
+- Live Yahoo OAuth and league-data smoke test.
+- Live Yahoo XML capture and parser fixtures.
+- Automatic weekly acquisition counting from Yahoo transactions.
+- Automatic projection/FPPG provider.
+- Confirmed/probable goalie-start provider.
+- Matchup/standings context.
+- Official Yahoo Fantasy branding before any public deployment.
+- Yahoo write operations only if/when Yahoo explicitly approves the required access.
 
 ## Next phase
 

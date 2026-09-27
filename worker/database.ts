@@ -44,11 +44,10 @@ async function verifySchema(database: D1Database): Promise<void> {
   const result = await database.prepare(
     `SELECT name FROM sqlite_schema WHERE type = 'table' AND name IN
       ('situation_room_state', 'situation_room_changes', 'situation_room_sync_runs',
-       'situation_room_yahoo_tokens', 'situation_room_yahoo_oauth_states')`,
+       'situation_room_revisions', 'situation_room_yahoo_tokens', 'situation_room_yahoo_oauth_states')`,
   ).all<{ name: string }>();
-  if (result.results.length !== 5) throw new Error("Situation Room D1 migration has not been applied.");
+  if (result.results.length !== 6) throw new Error("Situation Room D1 migration has not been applied.");
 }
-
 export function safeParseJson<T>(value: string | null): T | null {
   if (!value) return null;
   try {
