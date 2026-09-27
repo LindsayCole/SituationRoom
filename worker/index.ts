@@ -399,7 +399,7 @@ app.post("/api/yahoo/disconnect", async (context) => {
 app.get("/api/yahoo/teams", async (context) => {
   await ensureSchema(context.env.DB);
   return fetchYahooXml(context.env, context.get("user").userId,
-    "/users;use_login=1/games;game_codes=nhl;is_available=1/teams");
+    "/users;use_login=1/games/teams");
 });
 
 app.get("/api/yahoo/roster", async (context) => {

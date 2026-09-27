@@ -78,6 +78,10 @@ export async function fetchYahooXml(env: YahooBindings, ownerId: string, pathnam
     token = await refreshToken(env, ownerId, true);
     response = await yahooRequest(pathname, token.accessToken);
   }
+  if (response.status === 403) return Response.json({
+    error: "Yahoo Fantasy denied this API request (403). Check whether this developer app has been approved for Fantasy API access.",
+    code: "YAHOO_FANTASY_ACCESS_DENIED",
+  }, { status: 502 });
   if (!response.ok) return Response.json({ error: `Yahoo Fantasy request failed (${response.status}).` }, { status: 502 });
   return new Response(await response.text(), { status: 200,
     headers: { "Content-Type": "application/xml; charset=utf-8", "Cache-Control": "no-store" } });
